@@ -1,0 +1,6 @@
+.skift/
+.venv/
+node_modules/
+__pycache__/
+*.log
+.env
