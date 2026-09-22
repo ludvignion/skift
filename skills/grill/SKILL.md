@@ -45,11 +45,14 @@ base letter (ø, ß, non-Latin) has no ID: scripts/loop.py refuses the spec unti
 6. Append each decision to spec/decisions.md as one line, in the user's meaning:
    `- YYYY-MM-DD <requirement ID or outline>: <decision>` with today's date. A decision you made
    yourself starts with `[grill] `: `- YYYY-MM-DD <requirement ID or outline>: [grill] <decision>`.
+   Append only what this run settled: a line that repeats spec/spec.md is never a decision, and
+   coverage comes from step 7, not from restating the spec.
 7. Stop when nothing in scope is open. If the scope had nothing open, so this run appended no
    line, append one line `- YYYY-MM-DD <requirement ID or outline>: [grill] nothing open` so the
    scope counts as covered. Commit:
    `git add spec/ && git commit -m "skift: grill <requirement ID or outline>"`.
-8. End with a single line, alone. The next uncovered heading is the first heading under
-   `## Features`, in document order, that no decision cites, neither by its ID nor by an ID under
-   it:
-   `Next: /skift:grill <next uncovered heading>`, or `Next: /skift:run` when all sections are covered.
+8. End with a single line, alone. A heading under `## Features` is covered when a decision cites
+   its ID or an ID under it, counting this run's lines. Count the headings (M) and the covered ones
+   (N). The next uncovered heading is the first one in document order that is not covered:
+   `Next: /skift:grill <next uncovered heading> (N of M covered)`, or `Next: /skift:run` when all
+   are covered.
