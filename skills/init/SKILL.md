@@ -1,6 +1,6 @@
 ---
 name: init
-description: Copy the skift project template into the current repo without overwriting anything, and git init if needed.
+description: Copy the skift project template into the current repo without overwriting anything, adding only what an existing CLAUDE.md or .gitignore lacks, and git init if needed.
 disable-model-invocation: true
 ---
 
@@ -16,7 +16,18 @@ T="${CLAUDE_PLUGIN_ROOT}/templates/project"
 done
 ```
 
-3. Show its output: the files copied and the files skipped.
-4. End with this line, alone:
+3. Add to CLAUDE.md the template's `##` sections it lacks, and to .gitignore the template's lines
+   it lacks. Nothing already there changes; a file just copied gets nothing:
+
+```bash
+T="${CLAUDE_PLUGIN_ROOT}/templates/project"
+new=$(awk 'FILENAME == ARGV[1] { if (/^## /) have[$0] = 1; next } /^## / { keep = !($0 in have) } keep' CLAUDE.md "$T/CLAUDE.md")
+if [ -n "$new" ]; then printf '\n%s\n' "$new" >> CLAUDE.md; echo "added to CLAUDE.md:"; echo "$new" | grep '^## '; fi
+new=$(grep -vxFf .gitignore "$T/.gitignore")
+if [ -n "$new" ]; then printf '\n%s\n' "$new" >> .gitignore; echo "added to .gitignore:"; echo "$new"; fi
+```
+
+4. Show both outputs: the files copied, the files skipped, and what was added to each.
+5. End with this line, alone:
 
 Next: fill Stack and Verification in CLAUDE.md, write spec/spec.md, then /skift:grill

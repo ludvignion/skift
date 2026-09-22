@@ -3,7 +3,8 @@
 A minimal Claude Code harness. A spec becomes a feature list; each feature is built and verified,
 by using the running app, in its own fresh session. A driver opens every context window; agents never do.
 
-1. `/skift:init` in an empty repo: copies the project template.
+1. `/skift:init` in a new or existing repo: copies the project template, adding only what an existing
+   `CLAUDE.md` or `.gitignore` lacks.
 2. Fill Stack and Verification in `CLAUDE.md`; write `spec/spec.md`.
 3. `/skift:grill`, then `/skift:grill <heading>` per section: answers land in `spec/decisions.md`.
 4. `/skift:run`: cuts the spec into workloads, writes `features.json`, then builds one feature per session.
