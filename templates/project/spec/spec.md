@@ -4,7 +4,9 @@
 
 ## Users
 
+## Constraints
+
 ## Features
-<!-- Every heading under here with text of its own is a requirement; a heading with only sub-headings groups them. Nest as needed. -->
+<!-- Every heading with a body under here is a requirement; each top-level heading is a slice a user can test; order is build order. -->
 
 ## Out of scope

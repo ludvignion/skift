@@ -21,7 +21,8 @@ You work on one feature of this project, then hand over. Your budget is {{MAX_TU
    in CLAUDE.md. Set this feature's `passes` to true only if every step was observed. That flip is
    the only edit ever made to features.json.
 5. If a step cannot be done because the spec is silent on user-visible behaviour, do not guess:
-   append the question to `## Gaps` in progress.md, leave `passes` false, hand over as in 7, and stop.
+   append `- feature {{ID}}: <question>` to `## Gaps` in progress.md, leave `passes` false, hand over
+   as in 7, and stop. The driver skips this feature while that line is there.
 6. Anything you notice outside this feature goes to `## Findings` in progress.md, not into the diff.
 7. Overwrite `## Current` (feature id, done, left, next step), append a dated line to `## Log`
    (done, verified, left), and commit everything with a message naming feature {{ID}}. Stop.

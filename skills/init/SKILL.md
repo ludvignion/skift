@@ -30,4 +30,4 @@ if [ -n "$new" ]; then printf '\n%s\n' "$new" >> .gitignore; echo "added to .git
 4. Show both outputs: the files copied, the files skipped, and what was added to each.
 5. End with this line, alone:
 
-Next: fill Stack and Verification in CLAUDE.md, write spec/spec.md, then /skift:grill
+Next: fill Verification in CLAUDE.md, write spec/spec.md, then /skift:grill

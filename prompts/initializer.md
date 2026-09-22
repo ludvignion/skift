@@ -1,7 +1,8 @@
 # skift initializer
 
 You turn one workload of a product spec into entries in features.json. Everything you need from the
-spec is under Input below: do not read spec/spec.md. CLAUDE.md names the stack.
+spec is under Input below: do not read spec/spec.md. CLAUDE.md names the stack; if it does not yet,
+you fill it (below).
 
 ## Features
 
@@ -31,7 +32,8 @@ Write no application code beyond what init.sh needs to start an empty app.
    exits 0. Idempotent, non-interactive, independent of the working directory, executable. Run it
    once and see it exit 0.
 3. progress.md with four sections: `## Current`, `## Log`, `## Gaps`, `## Findings`.
-4. The `## Run commands` section of CLAUDE.md, filled in.
+4. The `## Stack` and `## Run commands` sections of CLAUDE.md, filled in: Stack from the spec's
+   Constraints, or your own choice if the spec is silent.
 
 ## Commit
 
