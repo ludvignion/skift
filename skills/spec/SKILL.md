@@ -9,12 +9,13 @@ argument-hint: "[spec .md file or folder, default spec/spec.md] [--next [N]]"
 
 Arguments: `$ARGUMENTS`. The spec is the path given, or spec/spec.md. With `--next [N]` (N is 1 when
 left out), the spec is the one kanban/source.json names, and only the next N slices without features
-get them. The user wrote the spec in any shape and any size. You turn it into features that fresh
-Claude sessions build one at a time. Each session builds one feature, reads the spec (a large one
-through the index), kanban/context.md and CLAUDE.md, and decides how to build it: what you write says
-what must work and what is fixed, never how.
+get them. The user wrote the spec in any shape and any size. You turn it into features and stop:
+nothing is built here. Later the user tells Claude what to build, one feature, one slice or all of
+them, and Claude builds each by the `## Kanban` section of CLAUDE.md, reading the spec (a large one
+through the index) and kanban/context.md, and decides how: what you write says what must work and
+what is fixed, never how.
 
-`L` below stands for `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/loop.py" --project-dir "$PWD"`.
+`L` below stands for `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/kanban.py" --project-dir "$PWD"`.
 
 ## Steps
 
@@ -31,7 +32,7 @@ what must work and what is fixed, never how.
    migrations, the code the spec will change. When features exist, run `L --status`: it marks the
    features the spec changed under and lists sections new in the spec. Never open .env or print a
    secret; list only the keys it has: `grep -o '^[A-Za-z_][A-Za-z0-9_]*=' .env`.
-3. Find the missing context: what a session needs to build and check the slices you detail now, that
+3. Find the missing context: what Claude needs to build and check the slices you detail now, that
    neither the spec nor the repo gives. On a first run, also what the whole map depends on. Ask
    only when a wrong guess would cost rework across features or touch something the user owns:
    - access to systems: which database, API or environment, how to reach it, which data is safe to
@@ -41,7 +42,7 @@ what must work and what is fixed, never how.
    - what done looks like, where the spec leaves it open across features;
    - the stack, only when neither the spec nor the repo decides it and the user may care;
    - contradictions in the spec: quote both sections by id and recommend one.
-   Everything else is the call of the sessions that build it. Record as an assumption only what they
+   Everything else is decided when a feature is built. Record as an assumption only what the features
    must agree on about what a user sees or a system shows, such as an address, a file format or a
    default; never how to build it (data model, algorithm, what a model does and what code does,
    libraries, file layout) unless the spec or the user says so.
@@ -54,9 +55,9 @@ what must work and what is fixed, never how.
      their values), and what must never change there;
    - `## Answers`: each answer as `- YYYY-MM-DD Q: <question as asked> A: <answer as given>`; for
      "all recommended", A is the recommended answer followed by ` (recommended)`. Answers bind every
-     session;
+     feature built;
    - `## Assumptions`: each thing you decided, as `- YYYY-MM-DD <assumption>`. Assumptions are
-     defaults: a session that sees a better way builds it and records why.
+     defaults: whoever builds a feature takes a better way where they see one, and records why.
 6. Write kanban/map.md: every slice of the whole spec, in build order, and what is not built.
 
        # Map
@@ -87,12 +88,12 @@ what must work and what is fixed, never how.
    - source: the most specific sections the feature comes from, each inside its slice's [src: ...];
      a feature citing a whole chapter is flagged by every edit in it. Together, the features of a
      slice cite every section with text in the slice that Context and Out of scope do not hold.
-   - A feature is one session's work: one statement of the spec. An answer or assumption that
+   - A feature is one sitting's work: one statement of the spec. An answer or assumption that
      refines a statement becomes steps of its feature, never a feature of its own. Setup goes into
      the first feature that needs it, never a feature of its own.
    - steps: what a person does and sees, or what a system shows, each checkable; at most 8. They are
      also the checklist the user reviews the feature by.
-   - Nothing the spec does not ask for. How a feature gets built is left to its session.
+   - Nothing the spec does not ask for. How a feature gets built is decided when it is built.
    - ids count up across every file, from one past the highest id kanban/features/ holds now or has
      ever held: `git log -p -- kanban/features | grep -o '"id": [0-9]*' | grep -o '[0-9]*$' | sort -n | tail -1`.
    - When features already exist, on every run, `--next` included: keep every feature whose
@@ -110,4 +111,5 @@ what must work and what is fixed, never how.
       its number of features;
     - the slices not detailed yet, one line each;
     - the assumptions you made, and the questions still open if the user said "enough";
-    - then this line, alone: `Next: /skift:run --until <the last slice detailed now>`
+    - then this line, alone, with the first open feature's id and the last slice detailed now:
+      `Next: review kanban/, then tell Claude what to build: "build feature <id>", or "build every open feature up to <slice>"`

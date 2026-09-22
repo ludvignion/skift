@@ -4,21 +4,20 @@
     "name": "ludvignion"
   },
   "metadata": {
-    "description": "skift: your spec becomes kanban features; each is built in its own fresh session, and every run ends with a handoff.",
-    "version": "0.7.0"
+    "description": "skift: your spec becomes kanban features; you tell Claude which to build.",
+    "version": "0.8.0"
   },
   "plugins": [
     {
       "name": "skift",
       "source": "./",
-      "description": "Spec to kanban features, missing context asked once, one feature built per fresh session.",
-      "version": "0.7.0",
+      "description": "Spec to kanban features, missing context asked once. Building stays in your session.",
+      "version": "0.8.0",
       "category": "workflow",
       "keywords": [
-        "harness",
         "spec",
         "features",
-        "loop"
+        "kanban"
       ]
     }
   ]

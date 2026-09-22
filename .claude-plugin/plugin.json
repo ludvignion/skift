@@ -1,7 +1,7 @@
 {
   "name": "skift",
-  "version": "0.7.0",
-  "description": "Turn a spec in any Markdown into kanban features, ask only for missing context, then build one feature per fresh session, with a handoff after every run.",
+  "version": "0.8.0",
+  "description": "Turn a spec in any Markdown into kanban features, asking only for missing context. It builds nothing: you tell Claude what to build, one feature, one slice or all of them.",
   "author": {
     "name": "ludvignion"
   },
@@ -10,6 +10,6 @@
   "skills": [
     "./skills/init",
     "./skills/spec",
-    "./skills/run"
+    "./skills/status"
   ]
 }

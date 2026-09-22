@@ -1,8 +1,8 @@
 # <what you want>
 
 <!--
-Write what you want here, in any shape, then run /skift:spec. It reads this file and the repo, asks
-for what is missing, and turns it into features under kanban/features/ that /skift:run builds.
+Write what you want built here, in any shape, then run /skift:spec. It reads this file and the repo, asks
+for what is missing, and turns it into features under kanban/features/. Then tell Claude what to build.
 It helps to say:
 - what it is for, and who uses it;
 - what done looks like;
