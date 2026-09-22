@@ -28,16 +28,16 @@ base letter (ø, ß, non-Latin) has no ID: scripts/loop.py refuses the spec unti
 3. Load only what the scope needs.
    - No scope: read the context sections (every top-level section except `## Features`); of
      `## Features`, read only the headings. Every top-level heading under `## Features` must end
-     in something a user can do in the app. Flag a heading that names a layer (data model, API,
-     validation, refactor) and ask for a rewrite before anything else. The first heading is the
-     tracer bullet. Settle cross-cutting behaviour: what holds across features. Cite each
-     decision as `outline`.
+     in something the user does with or gets from the product. Flag a heading that names a layer
+     (data model, API, validation, refactor) and ask for a rewrite before anything else. The first
+     heading is the tracer bullet. Settle cross-cutting behaviour: what holds across features.
+     Cite each decision as `outline`.
    - A scope: read that heading's lines up to the next heading of the same or higher level, and
      the context sections (every top-level section except `## Features`). Never load the rest of
      the spec. Cite each decision with the most specific requirement ID it settles.
 4. For every open point: search src/, tests/, features.json, progress.md and spec/decisions.md
    first; what the repo or the spec already answers is settled, never asked and never restated.
-   Then apply one test: would the user notice the difference in the running app? No: decide it,
+   Then apply one test: would the user notice the difference in the product? No: decide it,
    record it as `[grill]`, never show it. Yes: ask.
 5. Ask in numbered rounds of related questions, each with a recommended answer; "all
    recommended" is a valid reply. No cap, no floor. Never ask about naming, layout, technical

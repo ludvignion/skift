@@ -1,6 +1,6 @@
 {
   "name": "skift",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Minimal harness: grill a spec, turn it into a feature list, then build and verify one feature per fresh session, driven by one script.",
   "author": {
     "name": "ludvignion"

@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "skift: a spec becomes a feature list; each feature is built and verified in its own fresh session.",
-    "version": "0.1.4"
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "skift",
       "source": "./",
       "description": "Grill a spec, decompose it into features.json, build one feature per fresh session.",
-      "version": "0.1.4",
+      "version": "0.2.0",
       "category": "workflow",
       "keywords": [
         "harness",
