@@ -7,9 +7,12 @@ so everything worth saying goes into progress.md. Your budget is {{MAX_TURNS}} t
 
 {{FEATURE}}
 
-It lives in {{FEATURE_FILE}}. It comes from the spec {{SPEC}}: read the parts it comes from.
-kanban/context.md holds what the user answered and what was assumed: follow it. Secrets are in .env:
-never print them, never commit them.
+It lives in {{FEATURE_FILE}}. It comes from these sections of the spec {{SPEC}}:
+
+{{SOURCE}}
+
+Read other parts of the spec only where these refer to them. kanban/context.md holds what the user
+answered and what was assumed: follow it. Secrets are in .env: never print them, never commit them.
 
 ## Session
 

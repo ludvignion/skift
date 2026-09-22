@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "skift: your spec becomes kanban features; each is built in its own fresh session, and every run ends with a handoff.",
-    "version": "0.5.0"
+    "version": "0.6.0"
   },
   "plugins": [
     {
       "name": "skift",
       "source": "./",
       "description": "Spec to kanban features, missing context asked once, one feature built per fresh session.",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "category": "workflow",
       "keywords": [
         "harness",

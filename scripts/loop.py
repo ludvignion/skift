@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""skift driver: kanban/features/NN-<slice>.json -> one fresh `claude -p` per feature until all pass.
-/skift:spec writes the features from your spec; this script only builds them, in build order, and
---until stops after one slice. A feature named under ## Gaps in progress.md is skipped, and a spec
-changed since /skift:spec stops the run before it starts. Every run ends with a handoff in
-.skift/handoff.md: what you can do now, how to open it, what to check, what was decided for you, what
-is not built, and what to do next. Ctrl+C stops after the current session; a second Ctrl+C stops now."""
-import argparse, contextlib, hashlib, itertools, json, os, re, signal, subprocess, sys, threading, time  # noqa: E401
+"""skift driver. /skift:spec turns a spec of any size into kanban/map.md (every slice in build order, with
+the spec sections it covers) and kanban/features/NN-<slice>.json (the features of the slices detailed so
+far, each citing its sections); this script indexes the spec, checks that nothing in it is dropped, and
+builds the features, one fresh `claude -p` each, until all pass or --until's slice is done. A feature
+named under ## Gaps in progress.md is skipped. A spec edit stops only the features whose sections changed.
+Every run ends with a handoff in .skift/handoff.md: what you can do now, how to open it, what to check,
+what was decided for you, what is not built, and what to do next. Ctrl+C stops after the current
+session; a second Ctrl+C stops now."""
+import argparse, contextlib, hashlib, itertools, json, os, re, signal, subprocess, sys, threading, time, unicodedata  # noqa: E401
 from pathlib import Path
 
 MODEL = "sonnet"
@@ -13,15 +15,150 @@ MAX_TURNS = 200  # per session
 MAX_SESSIONS_PER_FEATURE = 3  # consecutive sessions on one feature without passing, then stop
 SESSION_TIMEOUT = 3600  # seconds per session
 INIT_TIMEOUT = 180  # seconds for ./init.sh when the run ends
+SMALL_SPEC_CHARS = 60000  # up to this, /skift:spec reads the spec whole and details every slice at once
+CHUNK_LINES = 80  # own text longer than this is cited in parts, <id>~1, <id>~2, ...
 
 PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
-FEATURES, SOURCE, PROGRESS, HANDOFF = "kanban/features", "kanban/source.json", "progress.md", ".skift/handoff.md"
-LEGACY = "features.json"  # the single feature file of skift before 0.4
+FEATURES, MAP, INDEX, SOURCE = "kanban/features", "kanban/map.md", "kanban/index.md", "kanban/source.json"
+PROGRESS, HANDOFF, LEGACY = "progress.md", ".skift/handoff.md", "features.json"  # LEGACY: the feature file before 0.4
 SECTIONS = ("Current", "Log", "Built", "Decided", "Gaps", "Findings")  # of progress.md
 FILE_RE, NOTE_RE = re.compile(r"^(\d+)-[a-z0-9]+(?:-[a-z0-9]+)*$"), re.compile(r"\bfeature #?(\d+)\b", re.I)
+HEADING_RE, FENCE_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$"), re.compile(r"^\s*(```|~~~)")
+EXPLICIT_ID = re.compile(r"\b(?:REQ|FR|NFR|US|UC|BR)-\d{1,6}\b")  # requirement ids a heading may carry
+TRANSLIT = str.maketrans({"ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "ß": "ss", "ł": "l", "Ł": "L", "đ": "d", "Đ": "D", "ð": "d", "þ": "th"})
+SLICE_LINE_RE, SRC_RE = re.compile(r"^- (\d+-[a-z0-9]+(?:-[a-z0-9]+)*):\s*(.*?)\s*\[src:"), re.compile(r"\[src:\s*([^\]]*)\]\s*$")
 TOOL_KEYS = ("command", "file_path", "path", "pattern")
 STOP: list = []  # non-empty once Ctrl+C was pressed
 
+
+# The spec index: sections by id, read straight from the spec each time, so line numbers never go stale.
+
+def slug(text: str) -> str:
+    """Lowercase a-z0-9 with runs of anything else as `-`: accents dropped (å→a, é→e), and ø→o, æ→ae, ß→ss."""
+    plain = "".join(c for c in unicodedata.normalize("NFKD", text.translate(TRANSLIT)) if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", "-", re.sub(r"[`*_\[\]()]", "", plain).lower()).strip("-")[:48] or "untitled"
+
+def spec_files(root: Path, spec: str) -> list[Path]:
+    path = root / spec
+    if path.is_dir(): return sorted(p for p in path.rglob("*.md") if p.is_file())
+    if path.is_file(): return [path]
+    raise ValueError(f"{spec}: no such file or folder")
+
+def chunks(lines: list[str], first: int) -> list[tuple[int, int]]:
+    """Line ranges, 1-based and inclusive, of `lines` (which start at line `first`), cut at blank lines into
+    parts of at least CHUNK_LINES // 2 lines."""
+    out, a, count = [], None, 0
+    for n, line in enumerate(lines, first):
+        if line.strip():
+            a, count = (n if a is None else a), count + 1
+        elif a is not None and count >= CHUNK_LINES // 2:
+            out.append((a, n - 1))
+            a, count = None, 0
+    if a is not None: out.append((a, first + len(lines) - 1))
+    return out
+
+def index(root: Path, spec: str) -> dict[str, dict]:
+    """Every section of the spec, in document order, by id: parent, depth, file, start, end, title, own, hash.
+    A section is a heading and its subtree (start-end); its own text is what stands before its first subheading.
+    Its id is a requirement id in the heading (REQ-12, FR-3, ...), else the slug path of its headings. A file's
+    single H1 is its title: it stays out of the paths, and citing it covers only its own text. With several
+    files, each file is a section too, its id its path, holding everything in it. Own text over CHUNK_LINES
+    lines is split into sections <id>~1, <id>~2, ... Two same-named siblings: <id>, <id>-2."""
+    files, rows = spec_files(root, spec), {}
+    for path in files:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        heads, fence = [], False
+        for n, line in enumerate(lines, 1):
+            if FENCE_RE.match(line):
+                fence = not fence
+            elif not fence and (m := HEADING_RE.match(line)):
+                heads.append((n, len(m[1]), m[2].strip()))
+        title_h1 = sum(level == 1 for _, level, _ in heads) == 1
+        lead = [slug(p) for p in Path(os.path.relpath(path, root / spec)).with_suffix("").parts] if len(files) > 1 else []
+        rel, stack = os.path.relpath(path, root), []  # stack: (level, slug, id) of the headings still open
+        top = "/".join(lead) or None  # with several files, the file's own section
+        if top:
+            first = heads[0][0] - 1 if heads else len(lines)
+            rows[top] = {"id": top, "parent": None, "depth": 0, "file": rel, "start": 1, "end": len(lines),
+                         "title": rel, "own": "\n".join(lines[:first]).strip()}
+        for k, (start, level, title) in enumerate(heads):
+            body_end = heads[k + 1][0] - 1 if k + 1 < len(heads) else len(lines)
+            end = next((h[0] - 1 for h in heads[k + 1:] if h[1] <= level), len(lines))
+            while stack and stack[-1][0] >= level: stack.pop()
+            path_ = [s for lv, s, _ in stack if not (title_h1 and lv == 1)]
+            base = m[0] if (m := EXPLICIT_ID.search(title)) else "/".join(lead + path_ + [slug(title)])
+            sid, n = base, 2
+            while sid in rows: sid, n = f"{base}-{n}", n + 1
+            parent = next((i for lv, _, i in reversed(stack) if not (title_h1 and lv == 1)), top)
+            depth = len([1 for lv, _, _ in stack if not (title_h1 and lv == 1)]) + bool(top)
+            stack.append((level, slug(title), sid))
+            own = lines[start:body_end]
+            rows[sid] = {"id": sid, "parent": parent, "depth": depth, "file": rel, "start": start, "end": end,
+                         "title": title, "own": "\n".join(own).strip()}
+            if sum(1 for line in own if line.strip()) > CHUNK_LINES:
+                rows[sid]["own"] = ""
+                for c, (a, b) in enumerate(chunks(own, start + 1), 1):
+                    rows[f"{sid}~{c}"] = {"id": f"{sid}~{c}", "parent": sid, "depth": depth + 1, "file": rel, "start": a,
+                                          "end": b, "title": f"{title}, part {c}", "own": "\n".join(lines[a - 1:b]).strip()}
+    for r in rows.values():
+        r["hash"] = hashlib.sha256(re.sub(r"\s+", " ", r["own"]).encode()).hexdigest()[:16]
+    return rows
+
+def summary(row: dict) -> str:
+    first = next((line.strip() for line in row["own"].splitlines() if line.strip() and not line.lstrip().startswith(("|", "<", "!["))), "")
+    first = re.sub(r"\s+", " ", first).replace("|", "/")
+    return first[:110] + "..." if len(first) > 110 else first
+
+def write_index(root: Path, spec: str, rows: dict) -> None:
+    out = [f"# Spec index of {spec}", "", "Written by skift from the spec; do not edit. Read a section with",
+           "`loop.py --show <id>`. Each line: id | file:lines | lines of own text | heading | first line.", ""]
+    for r in rows.values():
+        own = sum(1 for line in r["own"].splitlines() if line.strip())
+        out.append(f"{'  ' * r['depth']}- {r['id']} | {r['file']}:{r['start']}-{r['end']} | own={own} | {r['title'].replace('|', '/')} | {summary(r)}")
+    (root / INDEX).parent.mkdir(parents=True, exist_ok=True)
+    (root / INDEX).write_text("\n".join(out) + "\n", encoding="utf-8")
+
+def text_of(root: Path, row: dict, numbered: bool = False) -> str:
+    lines = (root / row["file"]).read_text(encoding="utf-8", errors="replace").splitlines()[row["start"] - 1:row["end"]]
+    body = [f"{n:>6}  {line}" if numbered else line for n, line in enumerate(lines, row["start"])]
+    return "\n".join([f"## {row['id']}  ({row['file']}:{row['start']}-{row['end']})", *body])
+
+def under(sid: str | None, anc: str, parents: dict) -> bool:
+    """Whether section `sid` is `anc` or lies inside it."""
+    seen = set()
+    while sid is not None and sid not in seen:
+        if sid == anc: return True
+        seen.add(sid)
+        sid = parents.get(sid)
+    return False
+
+def units(rows: dict) -> list[str]:
+    """The sections with text of their own: what the map and the features must cover."""
+    return [i for i, r in rows.items() if r["own"]]
+
+def spec_path(root: Path) -> str:
+    """The spec: from kanban/source.json once /skift:spec is done, else from the index's first line."""
+    if (root / SOURCE).is_file(): return json.loads((root / SOURCE).read_text(encoding="utf-8"))["spec"]
+    if (root / INDEX).is_file() and (m := re.match(r"# Spec index of (.+)", (root / INDEX).read_text(encoding="utf-8"))): return m[1].strip()
+    raise ValueError(f"no spec yet: run --index <your spec> first")
+
+
+# The map and the features.
+
+def read_map(root: Path) -> dict | None:
+    """kanban/map.md: the slices in build order (name, what, source), and the sections under ## Context and
+    ## Out of scope. Each line ends in [src: <section id>, ...]."""
+    if not (root / MAP).is_file(): return None
+    mp, part = {"slices": [], "context": [], "out": []}, None
+    for line in (root / MAP).read_text(encoding="utf-8").splitlines():
+        if h := re.match(r"^##\s+(.+?)\s*$", line):
+            part = {"slices": "slices", "context": "context", "out of scope": "out"}.get(h[1].lower())
+        elif part and (s := SRC_RE.search(line)):
+            ids = [x.strip() for x in s[1].split(",") if x.strip()]
+            if part != "slices": mp[part] += ids
+            elif m := SLICE_LINE_RE.match(line.strip()): mp["slices"].append({"name": m[1], "what": m[2], "source": ids})
+    mp["slices"].sort(key=lambda s: (int(s["name"].split("-")[0]), s["name"]))
+    return mp
 
 def slices(root: Path) -> list[Path]:
     """The slice files in build order: kanban/features/NN-<slice>.json, by their number."""
@@ -48,6 +185,60 @@ def load(root: Path) -> list[dict]:
             feats.append({**f, "_slice": p.stem})
     return feats
 
+def check(rows: dict, mp: dict, feats: list[dict], detailed: set) -> list[str]:
+    """Why the map and the features do not fit the spec: sections that do not exist, features citing outside
+    their slice, and sections with text that no slice, no feature of a detailed slice, Context or Out of scope covers."""
+    parents, problems = {i: r["parent"] for i, r in rows.items()}, []
+    names, numbers = [s["name"] for s in mp["slices"]], [s["name"].split("-")[0] for s in mp["slices"]]
+    problems += [f"{MAP}: slice number {n} is used twice" for n in sorted({n for n in numbers if numbers.count(n) > 1})]
+    for sid in dict.fromkeys([i for s in mp["slices"] for i in s["source"]] + mp["context"] + mp["out"]):
+        if sid not in rows: problems.append(f"{MAP}: section {sid} is not in the spec")
+    problems += [f"{FEATURES}/{s}.json: slice {s} is not in {MAP}" for s in sorted(detailed - set(names))]
+    by_name = {s["name"]: s for s in mp["slices"]}
+    for f in (f for f in feats if f["_slice"] in by_name):
+        src = f.get("source")
+        if not (isinstance(src, list) and src and all(isinstance(x, str) for x in src)):
+            problems.append(f"feature {f['id']}: needs \"source\", the list of spec sections it comes from")
+            continue
+        for sid in src:
+            if sid not in rows: problems.append(f"feature {f['id']}: section {sid} is not in the spec")
+            elif not any(under(sid, a, parents) for a in by_name[f["_slice"]]["source"]):
+                problems.append(f"feature {f['id']}: section {sid} lies outside its slice {f['_slice']}")
+    inside = lambda sid, ancestors: any(under(sid, a, parents) for a in ancestors)  # noqa: E731
+    for sid in units(rows):
+        if inside(sid, mp["context"] + mp["out"]): continue
+        homes = [s for s in mp["slices"] if inside(sid, s["source"])]
+        if not homes: problems.append(f"section {sid} ({rows[sid]['title']}) is in no slice of {MAP}, nor under Context or Out of scope")
+        for s in (s for s in homes if s["name"] in detailed):
+            if not inside(sid, [x for f in feats if f["_slice"] == s["name"] for x in f.get("source") or []]):
+                problems.append(f"slice {s['name']}: no feature cites section {sid} ({rows[sid]['title']})")
+    return problems
+
+def record(root: Path, spec: str, rows: dict) -> None:
+    """kanban/source.json: the spec, and each section's hash and parent, as the features were written."""
+    data = {"spec": spec, "sections": {i: r["hash"] for i, r in rows.items()}, "parents": {i: r["parent"] for i, r in rows.items()}}
+    (root / SOURCE).write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+
+def changes(root: Path, rows: dict) -> dict:
+    """What changed in the spec since /skift:spec: sections edited, added and removed, and the old parents."""
+    src = json.loads((root / SOURCE).read_text(encoding="utf-8")) if (root / SOURCE).is_file() else {}
+    old = src.get("sections", {})
+    return {"edited": {i for i in rows if i in old and rows[i]["hash"] != old[i]}, "added": set(rows) - set(old) if old else set(),
+            "removed": set(old) - set(rows), "old_parents": src.get("parents", {})}
+
+def affected(f: dict, ch: dict, rows: dict) -> list[str]:
+    """The edited, added or removed sections inside what feature f cites."""
+    new = {i: r["parent"] for i, r in rows.items()}
+    cites = f.get("source") or []
+    hit = [i for i in ch["edited"] | ch["added"] if any(under(i, a, new) for a in cites)]
+    return sorted(hit + [i for i in ch["removed"] if any(under(i, a, ch["old_parents"]) for a in cites)])
+
+def uncovered_new(rows: dict, mp: dict, ch: dict) -> list[str]:
+    """Sections with text added to the spec since /skift:spec that no slice, Context or Out of scope covers."""
+    parents = {i: r["parent"] for i, r in rows.items()}
+    held = [i for s in mp["slices"] for i in s["source"]] + mp["context"] + mp["out"]
+    return [i for i in units(rows) if i in ch["added"] and not any(under(i, a, parents) for a in held)]
+
 def section(root: Path, name: str) -> list[str]:
     """The lines under `## <name>` in progress.md."""
     out, on = [], False
@@ -72,31 +263,20 @@ def ensure_progress(root: Path) -> None:
     missing = [f"## {s}\n" for s in SECTIONS if s.lower() not in have]
     if missing: path.write_text(text.rstrip("\n") + "\n\n" + "\n".join(missing), encoding="utf-8")
 
-def digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def state(root: Path) -> dict:
+    """What a run, --status and --dry-run look at: the spec, its sections, the map, the features, which slices
+    are detailed, what changed in the spec, which features that touches, and new sections in no slice."""
+    if (root / LEGACY).is_file(): raise ValueError(f"{LEGACY} is from skift before 0.4: rerun /skift:spec <your spec>")
+    if not (root / SOURCE).is_file(): raise ValueError(f"{SOURCE} is missing: run /skift:spec <your spec>")
+    spec = spec_path(root)
+    if (mp := read_map(root)) is None: raise ValueError(f"{MAP} is missing: rerun /skift:spec {spec}")
+    rows, feats = index(root, spec), load(root)
+    ch = changes(root, rows)
+    return {"spec": spec, "rows": rows, "map": mp, "feats": feats, "detailed": {p.stem for p in slices(root)}, "changes": ch,
+            "affected": {f["id"]: affected(f, ch, rows) for f in feats}, "new": uncovered_new(rows, mp, ch)}
 
-def spec_state(root: Path) -> str:
-    """Empty when the spec is unchanged since /skift:spec wrote the features; else why the run must not start."""
-    if not (root / SOURCE).is_file(): return f"{SOURCE} is missing: run /skift:spec <your spec file>"
-    src = json.loads((root / SOURCE).read_text(encoding="utf-8"))
-    spec = root / str(src.get("spec", ""))
-    if not spec.is_file(): return f"the spec {src.get('spec')} is gone: run /skift:spec <your spec file>"
-    if digest(spec) != src.get("sha256"): return f"{src['spec']} changed since /skift:spec wrote the features: rerun /skift:spec {src['spec']}"
-    return ""
-
-def mark(root: Path, spec: str) -> int:
-    """--mark-spec: check the features, record the spec they came from and its hash, then print the status."""
-    path = (root / spec).resolve()
-    if not path.is_file(): raise ValueError(f"{spec}: no such file")
-    feats = load(root)
-    if not feats: raise ValueError(f"{FEATURES}/ has no feature: write them first")
-    ensure_progress(root)
-    (root / SOURCE).write_text(json.dumps({"spec": os.path.relpath(path, root), "sha256": digest(path)}, indent=2) + "\n", encoding="utf-8")
-    return status(root, feats)
-
-def until_scope(feats: list[dict], until: str) -> set[str]:
+def until_scope(order: list[str], until: str) -> set[str]:
     """The slices up to and including `until`: its file name (01-orders), its name (orders) or its number (1)."""
-    order = list(dict.fromkeys(f["_slice"] for f in feats))
     hit = [s for s in order if until in (s, s.split("-", 1)[1]) or (until.isdigit() and int(until) == int(s.split("-")[0]))]
     if not hit: raise ValueError(f"--until {until}: no slice has that name ({', '.join(order)})")
     return set(order[:order.index(hit[0]) + 1])
@@ -108,24 +288,76 @@ def todo(feats: list[dict], scope: set | None, gapped: set) -> list[dict]:
 def plural(n: int, word: str) -> str:
     return f"{n} {word}{'s' * (n != 1)}"
 
-def status(root: Path, feats: list[dict]) -> int:
-    """Per slice, in build order: passing/total, gaps and findings, then each feature."""
-    gaps, found = notes(root, "Gaps"), notes(root, "Findings")
-    print(f"[skift] {sum(f['passes'] for f in feats)}/{len(feats)} features pass" + ("" if feats else f"; nothing in {FEATURES}/ yet: run /skift:spec"))
-    for s in dict.fromkeys(f["_slice"] for f in feats):
-        mine = [f for f in feats if f["_slice"] == s]
-        g, fi = (sum(len(n.get(f["id"], [])) for f in mine) for n in (gaps, found))
-        print(f"[skift] {s}  {sum(f['passes'] for f in mine)}/{len(mine)} passing · {plural(g, 'gap')} · {plural(fi, 'finding')}")
-        for f in mine:
-            print(f"[skift]   [{'x' if f['passes'] else ' '}] {f['id']}  {f['description']}" + ("  (gap)" if f["id"] in gaps else ""))
-    if feats and (why := spec_state(root)): print(f"[skift] a run would not start: {why}")
+def build_index(root: Path, spec: str) -> int:
+    """--index: write kanban/index.md, and say whether /skift:spec reads the spec whole or works from the index."""
+    rows, files = index(root, spec), spec_files(root, spec)
+    write_index(root, spec, rows)
+    chars = sum(len(p.read_text(encoding="utf-8", errors="replace")) for p in files)
+    print(f"[skift] {plural(len(rows), 'section')}, {len(units(rows))} with text, from {plural(len(files), 'file')}, {chars} characters: {INDEX}")
+    print("[skift] small: read the spec whole, and write the features of every slice now" if chars <= SMALL_SPEC_CHARS else
+          "[skift] large: work from the index, read sections with --show, and write the features of the first slice only")
     return 0
 
-def dry_run(root: Path, a: argparse.Namespace, feats: list[dict]) -> int:
-    scope, gapped = until_scope(feats, a.until) if a.until else None, set(notes(root, "Gaps"))
-    for f in todo(feats, scope, set()):
-        print(f"[skift] {'skip, gap' if f['id'] in gapped else 'would build'}: feature {f['id']} ({f['_slice']}): {f['description']}")
-    if why := spec_state(root): print(f"[skift] a run would not start: {why}")
+def show(root: Path, ids: list[str]) -> int:
+    """--show: each section's text with its line numbers, read from the spec as it is now."""
+    rows = index(root, spec_path(root))
+    for sid in ids:
+        print((text_of(root, rows[sid], numbered=True) if sid in rows else f"## {sid}: not in the spec") + "\n")
+    return 0 if all(i in rows for i in ids) else 1
+
+def grep(root: Path, pattern: str) -> int:
+    """--grep: the sections whose heading or own text matches, with the first matching line."""
+    rx, rows = re.compile(pattern, re.I), index(root, spec_path(root))
+    for r in rows.values():
+        line = summary(r) if rx.search(r["title"]) else next((x.strip() for x in r["own"].splitlines() if rx.search(x)), None)
+        if line is not None: print(f"- {r['id']} | {r['file']}:{r['start']}-{r['end']} | {r['title']} | {line[:160]}")
+    return 0
+
+def mark(root: Path, spec: str) -> int:
+    """--mark-spec: index the spec, check the map and the features against it, and when they fit, record each
+    section's hash in kanban/source.json and print the status."""
+    rows = index(root, spec)
+    write_index(root, spec, rows)
+    if (mp := read_map(root)) is None: raise ValueError(f"{MAP} is missing: write it first")
+    problems = check(rows, mp, load(root), {p.stem for p in slices(root)})
+    ensure_progress(root)
+    for p in problems: print(f"[skift] problem: {p}")
+    if problems:
+        print(f"[skift] {plural(len(problems), 'problem')}: fix them, then run --mark-spec again")
+        return 1
+    record(root, spec, rows)
+    return status(root)
+
+def status(root: Path) -> int:
+    """--status: per slice, in build order: passing/total, gaps and findings, then each feature; slices not
+    detailed yet; and what changed in the spec."""
+    st = state(root)
+    feats, gaps, found = st["feats"], notes(root, "Gaps"), notes(root, "Findings")
+    print(f"[skift] {sum(f['passes'] for f in feats)}/{len(feats)} features pass · {len(st['detailed'])} of {plural(len(st['map']['slices']), 'slice')} detailed")
+    for s in st["map"]["slices"]:
+        if s["name"] not in st["detailed"]:
+            print(f"[skift] {s['name']}  not detailed yet: {s['what']}")
+            continue
+        mine = [f for f in feats if f["_slice"] == s["name"]]
+        g, fi = (sum(len(n.get(f["id"], [])) for f in mine) for n in (gaps, found))
+        print(f"[skift] {s['name']}  {sum(f['passes'] for f in mine)}/{len(mine)} passing · {plural(g, 'gap')} · {plural(fi, 'finding')}")
+        for f in mine:
+            marks = ("  (gap)" if f["id"] in gaps else "") + (("  (spec changed since it passed)" if f["passes"] else "  (spec changed)") if st["affected"][f["id"]] else "")
+            print(f"[skift]   [{'x' if f['passes'] else ' '}] {f['id']}  {f['description']}{marks}")
+    for i in st["new"]: print(f"[skift] new in the spec, in no slice: {i} ({st['rows'][i]['title']})")
+    return 0
+
+def dry_run(root: Path, a: argparse.Namespace) -> int:
+    """--dry-run: what a run would build, skip or refuse."""
+    st = state(root)
+    order = [s["name"] for s in st["map"]["slices"]]
+    scope, gapped = until_scope(order, a.until) if a.until else None, set(notes(root, "Gaps"))
+    for f in todo(st["feats"], scope, set()):
+        why = "blocked, spec changed" if st["affected"][f["id"]] else "skip, gap" if f["id"] in gapped else "would build"
+        print(f"[skift] {why}: feature {f['id']} ({f['_slice']}): {f['description']}")
+    for s in (s for s in order if (scope is None or s in scope) and s not in st["detailed"]):
+        print(f"[skift] not detailed yet: {s}: /skift:spec --next writes its features")
+    for i in st["new"]: print(f"[skift] new in the spec, in no slice: {i} ({st['rows'][i]['title']})")
     return 0
 
 def on_sigint(sig, frame) -> None:
@@ -176,9 +408,10 @@ def fill(name: str, **kw) -> str:
     return re.sub(r"\{\{(\w+)\}\}", lambda m: str(kw.get(m[1], m[0])), (PROMPTS / name).read_text(encoding="utf-8"))
 
 
+
 def build(a: argparse.Namespace, root: Path, run: dict) -> str:
     """One session per open feature until none is left; returns why it stopped: done, gaps, stuck, stopped or limit."""
-    streak, fid = 0, None
+    st, streak, fid = run["state"], 0, None
     for n in itertools.count():
         if STOP: return "stopped"
         if a.max_iterations and n >= a.max_iterations: return "limit"
@@ -188,8 +421,10 @@ def build(a: argparse.Namespace, root: Path, run: dict) -> str:
         f = queue[0]
         streak, fid = (streak + 1 if f["id"] == fid else 1), f["id"]
         print(f"[skift] feature {fid} ({f['_slice']}), session {streak}: {f['description']}")
+        source = "\n\n".join(text_of(root, st["rows"][i]) for i in f.get("source") or [] if i in st["rows"])
         prompt = fill("coding.md", FEATURE=json.dumps({k: f[k] for k in ("id", "description", "steps")}, indent=2, ensure_ascii=False),
-                      ID=fid, MAX_TURNS=a.max_turns, FEATURE_FILE=f"{FEATURES}/{f['_slice']}.json", SPEC=run["spec"])
+                      ID=fid, MAX_TURNS=a.max_turns, FEATURE_FILE=f"{FEATURES}/{f['_slice']}.json", SPEC=st["spec"],
+                      SOURCE=source or "(the feature cites no section; its description and steps are all there is)")
         line = usage(session(prompt, a, root))[2]
         feats = load(root)
         passed = any(g["id"] == fid and g["passes"] for g in feats)
@@ -202,13 +437,17 @@ def build(a: argparse.Namespace, root: Path, run: dict) -> str:
 
 def start(a: argparse.Namespace, root: Path, run: dict) -> tuple[str, str]:
     try:
-        if (root / LEGACY).is_file(): raise ValueError(f"{LEGACY} is from skift before 0.4: rerun /skift:spec <your spec file>")
-        if why := spec_state(root): raise ValueError(why)
-        if not (feats := load(root)): raise ValueError(f"{FEATURES}/ has no feature: run /skift:spec <your spec file>")
-        run["scope"] = until_scope(feats, a.until) if a.until else None
+        st = state(root)
+        order = [s["name"] for s in st["map"]["slices"]]
+        run.update(state=st, order=order, scope=until_scope(order, a.until) if a.until else None)
+        if stray := sorted(st["detailed"] - set(order)):
+            raise ValueError(f"{FEATURES}/{stray[0]}.json is a slice {MAP} does not list: rerun /skift:spec {st['spec']}")
+        blocked = [f for f in st["feats"] if st["affected"][f["id"]] and not f["passes"] and (run["scope"] is None or f["_slice"] in run["scope"])]
+        if blocked:
+            raise ValueError("the spec changed under " + "; ".join(f"feature {f['id']} ({', '.join(st['affected'][f['id']][:3])})" for f in blocked[:5])
+                             + f": rerun /skift:spec {st['spec']} to update those features")
     except ValueError as e:
         return "refused", str(e)
-    run["spec"] = json.loads((root / SOURCE).read_text(encoding="utf-8"))["spec"]
     ensure_progress(root)
     return build(a, root, run), ""
 
@@ -227,19 +466,24 @@ def open_it(root: Path) -> list[str]:
 
 def handoff(root: Path, a: argparse.Namespace, outcome: str, run: dict, detail: str) -> str:
     """What the run leaves you: what you can do now, how to open it, what to check, what was decided for you,
-    what is not built, and what to do next. About the product, never about files or code."""
+    what is not built, what changed in the spec, and what to do next. About the product, never files or code."""
     try:
         feats = load(root)
     except ValueError:
         feats = []
-    by_id, scope = {f["id"]: f for f in feats}, run["scope"]
-    order = list(dict.fromkeys(f["_slice"] for f in feats))
+    st, scope = run.get("state") or {}, run.get("scope")
+    order = run.get("order") or list(dict.fromkeys(f["_slice"] for f in feats))
+    detailed = st.get("detailed") or {f["_slice"] for f in feats}
+    by_id = {f["id"]: f for f in feats}
     built, decided, gaps = notes(root, "Built"), notes(root, "Decided"), notes(root, "Gaps")
     passed = [by_id[i] for i in dict.fromkeys(run["passed"]) if i in by_id]
     wanted = [f for f in feats if scope is None or f["_slice"] in scope]
     last = max(scope, key=order.index) if scope else None
+    waiting = [s for s in order if (scope is None or s in scope) and s not in detailed]  # in scope, no features written yet
+    tally = f"({sum(f['passes'] for f in wanted)} of {len(wanted)} features pass)"
     head = {
-        "done": f"skift: {'built up to ' + last if last else 'everything is built'} ({sum(f['passes'] for f in wanted)} of {len(wanted)} features pass)",
+        "done": f"skift: built up to {last} {tally}" if last else
+                f"skift: every detailed slice is built {tally}" if waiting else f"skift: everything is built {tally}",
         "gaps": "skift: stopped: the features left need answers from you",
         "stuck": f"skift: stopped: feature {run['stuck'][0]} does not pass after {run['stuck'][1]} sessions" if run["stuck"] else "skift: stopped",
         "stopped": "skift: stopped by you",
@@ -259,7 +503,7 @@ def handoff(root: Path, a: argparse.Namespace, outcome: str, run: dict, detail: 
                 out += [f"    [ ] {f['id']}  {f['description']}"] + [f"          - {step}" for step in f["steps"]]
         if mine := [(f["id"], text) for f in passed for text in decided.get(f["id"], [])]:
             out += ["", "Decided for you, check these too"] + [f"  - {text} (feature {i})" for i, text in mine]
-    elif outcome == "done":
+    elif outcome == "done" and wanted:
         out += ["", "Nothing new was built: every feature in scope already passed."]
     if outcome not in ("refused", "done") and (left := [f for f in wanted if not f["passes"]]):
         out += ["", "Not built"]
@@ -268,11 +512,18 @@ def handoff(root: Path, a: argparse.Namespace, outcome: str, run: dict, detail: 
                    "does not pass yet; where it stopped is under ## Current in progress.md" if run["stuck"] and f["id"] == run["stuck"][0] else "open")
             out.append(f"  - feature {f['id']}, {f['description']}: {why}")
         if len(left) > 10: out.append(f"  - and {len(left) - 10} more")
+    moved = [f for f in feats if f["passes"] and (st.get("affected") or {}).get(f["id"])]
+    if moved: out += ["", "The spec changed under these built features"] + [f"  - feature {f['id']}, {f['description']}" for f in moved]
+    if st.get("new"): out += ["", "New in the spec, in no slice yet"] + [f"  - {st['rows'][i]['title']}" for i in st["new"][:10]]
     again = "/skift:run" + (f" --until {a.until}" if a.until else "")
-    later = [s for s in order[order.index(last) + 1:] if any(not f["passes"] for f in feats if f["_slice"] == s)] if last else []
+    after = [s for s in (order[order.index(last) + 1:] if last else order) if s not in detailed or any(not f["passes"] for f in feats if f["_slice"] == s)]
+    upcoming, check_ = (waiting or after or [None])[0], "Check the boxes above, then " if passed else ""
+    stale = upcoming in detailed and any((st.get("affected") or {}).get(f["id"]) and not f["passes"] for f in feats if f["_slice"] == upcoming)
     nxt = {
-        "done": (f"Check the boxes above, then /skift:run --until {later[0]}" if later else
-                 "Check the boxes above." + (" Everything is built." if all(f["passes"] for f in feats) else "")),
+        "done": (("Check the boxes above. " if passed else "") + "Everything is built." if upcoming is None else
+                 f"{check_}/skift:spec --next to write the features of {upcoming}" if upcoming not in detailed else
+                 f"{check_}/skift:spec {st.get('spec')} to update the features of {upcoming} the spec changed under, then /skift:run --until {upcoming}" if stale else
+                 f"{check_}/skift:run --until {upcoming}"),
         "gaps": f"Answer each question in kanban/context.md, delete its line under ## Gaps in progress.md, then {again}",
         "stuck": f"Read ## Current in progress.md, clear up what blocks the feature (kanban/context.md or its steps), then {again}",
         "stopped": f"Continue with {again}",
@@ -280,6 +531,7 @@ def handoff(root: Path, a: argparse.Namespace, outcome: str, run: dict, detail: 
         "refused": "Fix that, then /skift:run",
         "failed": f"Fix that, then {again}",
     }[outcome]
+    if (moved or st.get("new")) and outcome != "refused" and "/skift:spec " not in nxt: nxt += f"\n  For the spec changes above: /skift:spec {st['spec']}"
     return "\n".join(out + ["", "Next", f"  {nxt}"])
 
 def main() -> int:
@@ -291,22 +543,28 @@ def main() -> int:
     p.add_argument("--max-iterations", type=int, default=0, help="coding sessions before stopping (default: no limit)")
     p.add_argument("--until", metavar="SLICE", help="build only up to this slice: its file name (01-orders), name (orders) or number (1)")
     p.add_argument("--bypass", action="store_true", help="sessions run with bypassPermissions instead of auto")
-    p.add_argument("--status", action="store_true", help="per slice: passing/total, gaps and findings, then each feature; spawn no session")
-    p.add_argument("--dry-run", action="store_true", help="print the features a run would build; spawn no session")
-    p.add_argument("--mark-spec", metavar="SPEC", help="for /skift:spec: check the features, record the spec they came from, print the status")
+    p.add_argument("--status", action="store_true", help="per slice: passing/total, gaps, findings and each feature; spec changes")
+    p.add_argument("--dry-run", action="store_true", help="what a run would build, skip or refuse")
+    p.add_argument("--index", metavar="SPEC", help="for /skift:spec: index the spec (a .md file or a folder) into kanban/index.md")
+    p.add_argument("--show", metavar="ID", nargs="+", help="for /skift:spec: print these sections of the spec, with line numbers")
+    p.add_argument("--grep", metavar="REGEX", help="for /skift:spec: the sections whose heading or text matches")
+    p.add_argument("--mark-spec", metavar="SPEC", help="for /skift:spec: check the map and the features against the spec, and record it")
     a = p.parse_args()
     root = Path(a.project_dir).resolve()
     sys.stdout.reconfigure(line_buffering=True)
-    if a.status or a.dry_run or a.mark_spec:  # reports: they start nothing and leave the handoff alone
+    reports = {"index": lambda: build_index(root, a.index), "show": lambda: show(root, a.show), "grep": lambda: grep(root, a.grep),
+               "mark_spec": lambda: mark(root, a.mark_spec), "status": lambda: status(root), "dry_run": lambda: dry_run(root, a)}
+    if chosen := [k for k in reports if getattr(a, k)]:  # reports start no session and leave the handoff alone
         try:
-            if (root / LEGACY).is_file(): raise ValueError(f"{LEGACY} is from skift before 0.4: rerun /skift:spec <your spec file>")
-            if a.mark_spec: return mark(root, a.mark_spec)
-            return status(root, load(root)) if a.status else dry_run(root, a, load(root))
-        except (OSError, ValueError) as e:
+            return reports[chosen[0]]()
+        except BrokenPipeError:  # piped into head: fine
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+            return 0
+        except (OSError, ValueError, re.error) as e:
             print(f"[skift] {e}")
             return 1
     signal.signal(signal.SIGINT, on_sigint)
-    run: dict = {"passed": [], "stuck": None, "scope": None, "spec": ""}
+    run: dict = {"passed": [], "stuck": None, "scope": None}
     try:
         outcome, detail = start(a, root, run)
     except KeyboardInterrupt:
