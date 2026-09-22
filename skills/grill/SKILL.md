@@ -1,6 +1,6 @@
 ---
 name: grill
-description: Settle what spec/spec.md leaves open, in rounds of questions with recommended answers, asking only where two or more requirements depend on the answer and recording each answer verbatim in spec/decisions.md.
+description: Settle what spec/spec.md leaves open, in rounds of questions with recommended answers, asking only where a wrong guess would cost rework across features, and recording each answer verbatim in spec/decisions.md.
 disable-model-invocation: true
 ---
 
@@ -33,22 +33,25 @@ base letter (ø, ß, non-Latin) has no ID: scripts/loop.py refuses the spec unti
 4. An open point is something the spec asks for whose user-visible outcome it leaves undecided.
    What the spec does not ask for is never an open point: never propose it, not even as a
    recommended answer. For each open point, first look for the line in the spec or the repo
-   (src/, tests/, features.json, progress.md) that answers it; if one exists it is settled, never
-   asked and never restated. Then count the requirements whose build depends on the answer. Fewer
-   than two: not asked and not recorded; the initializer settles it. Two or more: ask.
-5. Ask in numbered rounds of related questions, in descending order of that count. Each question
-   stands on its own (never "as above"), lists the requirement IDs it affects, and carries a
-   recommended answer: the simplest outcome that does what the spec says, adding nothing it does
-   not ask for. Valid replies: an answer, "all recommended", or "decide it" (the recommended answer
-   is recorded as `[grill]`). Never ask about naming, screen layout, technical choices, or
-   anything under Out of scope. Print only the questions and, after each round, the lines just
-   written to spec/decisions.md, verbatim.
+   (src/, tests/, kanban/features/, progress.md) that answers it; if one exists it is settled, never
+   asked and never restated. Then weigh it by one question: if Claude guessed wrong, what would have
+   to be rebuilt? More than one feature, or something the user sees across the product: ask. One
+   feature, cheap to redo: not asked and not recorded; the initializer settles it and records it as
+   `[init]`, where the user can review it.
+5. Ask in numbered rounds of related questions, costliest to get wrong first. Each question stands
+   on its own (never "as above"), lists the requirement IDs it affects, and carries a recommended
+   answer: the simplest outcome that does what the spec says, adding nothing it does not ask for.
+   Valid replies: an answer, "all recommended", "decide it" (the recommended answer is recorded as
+   `[grill]`), or "enough" (stop asking: every point still open that is worth asking gets its
+   recommended answer, recorded as `[grill]`). Never ask about naming, screen layout, technical
+   choices, or anything under Out of scope. Print only the questions and, after each round, the
+   lines just written to spec/decisions.md, verbatim.
 6. Record each answer as one line with today's date, citing the most specific requirement IDs it
    settles, comma-separated, or `outline` when it holds across every requirement:
    `- YYYY-MM-DD <id>[,<id>...]: Q: <question as asked> A: <answer as given>`. Never reword it,
    never merge it with another line. For "all recommended", A is the recommended answer followed
-   by ` (recommended)`. For "decide it":
+   by ` (recommended)`. For "decide it" and "enough":
    `- YYYY-MM-DD <id>[,<id>...]: [grill] <recommended answer>`.
-7. Stop when nothing with a count of two or more is open. Commit:
+7. Stop when nothing worth asking is open, or on "enough". Commit:
    `git add spec/ && git commit -m "skift: grill"`. If nothing was open, commit nothing.
 8. End with this line, alone: `Next: /skift:run`

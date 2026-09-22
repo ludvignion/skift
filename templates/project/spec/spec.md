@@ -12,7 +12,9 @@
 requirement, and that text says what a user does and sees. A heading with only sub-headings groups
 requirements. Nest as deep as needed. Each top-level heading is a slice a user can test; order is
 build order. Every other top-level section is context: it holds across all requirements. Say
-under Purpose what the user gets: an app, a command, or files such as workbooks and reports.
+under Purpose what the user gets: an app, a command, or files such as workbooks and reports. Say
+under Constraints what it is built with (language, framework, libraries): nothing is chosen for
+you, and /skift:run refuses a spec whose Constraints are empty.
 
 Example:
 

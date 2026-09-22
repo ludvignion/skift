@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""skift driver: spec/spec.md -> features.json -> one fresh `claude -p` per feature until all pass.
-Decomposes when features.json is absent or with --append, then builds; --until stops after one slice.
+"""skift driver: spec/spec.md -> kanban/features/<slice>.json -> one fresh `claude -p` per feature until all pass.
+Decomposes when kanban/features/ has no file or with --append, then builds; --until stops after one slice.
 A feature named under ## Gaps in progress.md is skipped. A spec change under existing features stops
 the run first. Ctrl+C stops after the current session; a second Ctrl+C stops now."""
 import argparse, contextlib, itertools, json, os, re, signal, subprocess, sys, threading, time, unicodedata  # noqa: E401
@@ -14,7 +14,8 @@ MAX_SESSIONS_PER_FEATURE = 3  # consecutive sessions on one feature without pass
 SESSION_TIMEOUT = 3600  # seconds per session
 
 PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
-SPEC, DECISIONS, FEATURES, PROGRESS = "spec/spec.md", "spec/decisions.md", "features.json", "progress.md"
+SPEC, DECISIONS, FEATURES, PROGRESS = "spec/spec.md", "spec/decisions.md", "kanban/features", "progress.md"
+LEGACY = "features.json"  # the single feature file of skift before 0.4
 COMMENT_RE, DECISION_RE = re.compile(r"<!--.*?-->", re.S), re.compile(r"^- \d{4}-\d{2}-\d{2} `?([^\s`:,]+(?:,\s*[^\s`:,]+)*)`?:")
 MARK_RE, GAP_RE = re.compile(r"^skift: (initialize|reviewed) "), re.compile(r"\bfeature #?(\d+)\b", re.I)
 TOOL_KEYS = ("command", "file_path", "path", "pattern")
@@ -98,11 +99,24 @@ def parse_spec(text: str) -> tuple[str, dict[str, str]]:
     own = [lines[start], u.text] if (u := next((u for u in units if u.id == "features"), None)) else []
     return "\n".join(lines[:start] + own + lines[end:]).strip(), {u.id: u.text for u in units if u.id != "features"}
 
+def constraints(text: str) -> str:
+    """The text under `## Constraints`, comments dropped; empty when the section is missing."""
+    m = re.search(r"^##[ \t]+Constraints[ \t]*\n(.*?)(?=^#{1,2}[ \t]|\Z)", COMMENT_RE.sub("", text), re.M | re.S | re.I)
+    return m[1].strip() if m else ""
+
+def tops(reqs) -> list[str]:
+    """Slice ids: the top-level Features headings with requirements, in spec order."""
+    return list(dict.fromkeys(r.split("/")[1] for r in reqs))
+
+def slice_of(f: dict) -> str:
+    """The slice a feature belongs to: the second part of its requirement ID."""
+    return (str(f.get("spec")).split("/") + [""])[1]
+
 def until_ids(reqs: dict, until: str) -> set[str]:
     """Requirement IDs under the top-level Features heading `until` (its text or ID) or an earlier one in spec order."""
-    tops, want = list(dict.fromkeys(r.split("/")[1] for r in reqs)), slug(until.removeprefix("features/"))
-    if want not in tops: raise ValueError(f"--until {until}: no top-level heading under ## Features with requirements has that name ({', '.join(tops)})")
-    return {r for r in reqs if r.split("/")[1] in tops[:tops.index(want) + 1]}
+    order, want = tops(reqs), slug(until.removeprefix("features/"))
+    if want not in order: raise ValueError(f"--until {until}: no top-level heading under ## Features with requirements has that name ({', '.join(order)})")
+    return {r for r in reqs if r.split("/")[1] in order[:order.index(want) + 1]}
 
 def section(root: Path, name: str) -> list[str]:
     """The lines under `## <name>` in progress.md."""
@@ -113,7 +127,7 @@ def section(root: Path, name: str) -> list[str]:
     return out
 
 def todo(feats: list[dict], scope: set | None, gap: list[str]) -> list[dict]:
-    """Features to build, in features.json order: open, inside --until's slice, not named under ## Gaps."""
+    """Features to build, in spec order: open, inside --until's slice, not named under ## Gaps."""
     skip = {int(x) for g in gap for x in GAP_RE.findall(g)}
     return [f for f in feats if not f.get("passes") and (scope is None or f.get("spec") in scope) and f.get("id") not in skip]
 
@@ -141,23 +155,20 @@ def cut(spec: tuple, ids: list[str], cap: int) -> list[list[str]]:
     return out
 
 def status(root: Path, reqs: dict, feats: list[dict]) -> int:
-    """Per top-level Features heading, in spec order: passing/total, and the gaps and findings naming its features."""
-    top = {f.get("id"): str(f.get("spec")).split("/")[1] if "/" in str(f.get("spec")) else str(f.get("spec")) for f in feats}
-    rows = {s: [0, 0, 0, 0] for s in dict.fromkeys([r.split("/")[1] for r in reqs] + list(top.values()))}
-    loose = [0, 0]  # gaps and findings that name no feature
-    for f in feats:
-        rows[top[f.get("id")]][0] += bool(f.get("passes"))
-        rows[top[f.get("id")]][1] += 1
-    for col, name in ((2, "Gaps"), (3, "Findings")):
-        for line in section(root, name):
-            named = {top[i] for i in map(int, GAP_RE.findall(line)) if i in top}
-            for s in named: rows[s][col] += 1
-            loose[col - 2] += not named
+    """Per slice, in spec order: passing/total, the gaps and findings naming its features, then each feature."""
+    ids = {f.get("id") for f in feats}
+    notes = {k: [{int(i) for i in GAP_RE.findall(line)} & ids for line in section(root, k)] for k in ("Gaps", "Findings")}
+    gapped = set().union(*notes["Gaps"])
     plural = lambda n, word: f"{n} {word}{'s' * (n != 1)}"  # noqa: E731
-    width = max(map(len, rows), default=0)
-    print(f"[skift] {sum(r[0] for r in rows.values())}/{len(feats)} features pass" + ("" if feats else f"; no {FEATURES} yet"))
-    for s, (ok, n, g, fi) in rows.items():
-        print(f"[skift] {s.ljust(width)}  {ok}/{n} passing · {plural(g, 'gap')} · {plural(fi, 'finding')}")
+    print(f"[skift] {sum(bool(f.get('passes')) for f in feats)}/{len(feats)} features pass" + ("" if feats else f"; nothing in {FEATURES}/ yet"))
+    for s in dict.fromkeys(tops(reqs) + [slice_of(f) for f in feats]):
+        mine = [f for f in feats if slice_of(f) == s]
+        own = {f.get("id") for f in mine}
+        g, fi = (sum(bool(n & own) for n in notes[k]) for k in ("Gaps", "Findings"))
+        print(f"[skift] {s}  {sum(bool(f.get('passes')) for f in mine)}/{len(mine)} passing · {plural(g, 'gap')} · {plural(fi, 'finding')}")
+        for f in mine:
+            print(f"[skift]   [{'x' if f.get('passes') else ' '}] {f.get('id')}  {f.get('description', '')}" + ("  (gap)" if f.get("id") in gapped else ""))
+    loose = [sum(not n for n in notes[k]) for k in ("Gaps", "Findings")]
     if any(loose): print(f"[skift] naming no feature: {plural(loose[0], 'gap')} · {plural(loose[1], 'finding')}")
     return 0
 
@@ -165,11 +176,27 @@ def git(root: Path, *args: str) -> str | None:
     r = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
     return r.stdout if r.returncode == 0 else None
 
-def load(root: Path) -> list[dict] | None:
-    return json.loads((root / FEATURES).read_text(encoding="utf-8")) if (root / FEATURES).is_file() else None
+def load(root: Path, order: list[str]) -> list[dict] | None:
+    """Every feature: slice files in spec order, then any other slice file by name; None when there is no file."""
+    files = {p.stem: p for p in sorted((root / FEATURES).glob("*.json"))}
+    if not files: return None
+    out: list[dict] = []
+    for s in [s for s in order if s in files] + [s for s in files if s not in order]:
+        try:
+            out += json.loads(files[s].read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"{FEATURES}/{s}.json is not valid JSON: {e}") from e
+    return out
+
+def save(root: Path, feats: list[dict]) -> None:
+    """Each slice's features to its file; a slice file left with no feature holds []."""
+    by: dict[str, list[dict]] = {p.stem: [] for p in (root / FEATURES).glob("*.json")}
+    for f in feats: by.setdefault(slice_of(f), []).append(f)
+    for s, fs in by.items():
+        (root / FEATURES / f"{s}.json").write_text(json.dumps(fs, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 def next_id(root: Path, feats: list[dict]) -> int:
-    """One past every id features.json has ever held, so a removed id is never reused."""
+    """One past every id kanban/features/ has ever held, in any slice file, so a removed id is never reused."""
     hist = git(root, "log", "-p", "--format=", "--", FEATURES) or ""
     ids = [int(x) for x in re.findall(r'"id"\s*:\s*(\d+)', hist)] + [f["id"] for f in feats if isinstance(f.get("id"), int)]
     return max(ids, default=0) + 1
@@ -245,38 +272,38 @@ def fill(name: str, **kw) -> str:
 
 def initialize(a, root: Path, spec: tuple, ids: list[str], problems=()) -> set:
     """One initializer session for the workload `ids`; returns the feature ids it added."""
-    feats = load(root)
+    feats = load(root, tops(spec[1]))
     before = {f.get("id") for f in feats or []}
     prompt = fill("initializer.md", **material(spec, ids), IDS=" ".join(ids), MAX_STEPS=a.max_steps,
-                  NEXT_ID=next_id(root, feats or []), FEATURES_JSON="exists" if feats is not None else "does not exist")
+                  NEXT_ID=next_id(root, feats or []), FEATURES_STATE="has slice files" if feats is not None else "has no file yet")
     if problems: prompt += "\n\n## Coverage problems in the previous attempt\n\n" + "\n".join(f"- {p}" for p in problems)
     print(f"[skift] initializer: {usage(session(prompt, a, root))[2]}")
-    return {f.get("id") for f in load(root) or []} - before
+    return {f.get("id") for f in load(root, tops(spec[1])) or []} - before
 
 def decompose(a, root: Path, spec: tuple, workloads: list[list[str]]) -> int:
-    added = []
+    added, order = [], tops(spec[1])
     for n, ids in enumerate(workloads, 1):
         print(f"[skift] initializer {n}/{len(workloads)}: {' '.join(ids)}")
         added.append(initialize(a, root, spec, ids))
         if STOP: return 0
-    problems = coverage(spec[1], load(root) or [], a.max_steps)
+    problems = coverage(spec[1], load(root, order) or [], a.max_steps)
     for ids, new in zip(workloads, added) if problems else ():
         if mine := [p for p in problems if p[1] in ids or p[1] in new]:
             bad = {p[1] for p in mine if p[0] != "partition"}  # entries this run wrote: removed, then rewritten
-            (root / FEATURES).write_text(json.dumps([f for f in load(root) or [] if f.get("id") not in bad], indent=2) + "\n")
+            save(root, [f for f in load(root, order) or [] if f.get("id") not in bad])
             print(f"[skift] coverage: rerunning {' '.join(ids)} for {len(mine)} problem(s)")
             initialize(a, root, spec, ids, [p[2] for p in mine])
-    for p in (problems := coverage(spec[1], load(root) or [], a.max_steps)):
+    for p in (problems := coverage(spec[1], load(root, order) or [], a.max_steps)):
         print(f"[skift] coverage: {p[2]}")
     return 1 if problems else 0
 
-def build(a, root: Path, scope: set | None) -> int:
+def build(a, root: Path, scope: set | None, order: list[str]) -> int:
     streak, fid, totals = 0, None, {}
     for n in itertools.count():
         if STOP or (a.max_iterations and n >= a.max_iterations):
             print("[skift] stopped" if STOP else f"[skift] stopped after {a.max_iterations} iterations")
             return 0
-        feats, gap = load(root) or [], section(root, "Gaps")
+        feats, gap = load(root, order) or [], section(root, "Gaps")
         if not todo(feats, scope, []):
             print(f"[skift] all {len(feats)} features pass" if scope is None else
                   f"[skift] all {sum(f.get('spec') in scope for f in feats)} features up to {a.until} pass")
@@ -288,8 +315,9 @@ def build(a, root: Path, scope: set | None) -> int:
         streak, fid = (streak + 1 if queue[0].get("id") == fid else 1), queue[0].get("id")
         print(f"[skift] feature {fid}, session {streak}: {queue[0].get('description', '')}")
         feature = json.dumps({k: queue[0].get(k) for k in ("id", "spec", "description", "steps")}, indent=2)
-        tin, tout, line = usage(session(fill("coding.md", FEATURE=feature, ID=fid, MAX_TURNS=a.max_turns), a, root))
-        feats = load(root) or []
+        tin, tout, line = usage(session(fill("coding.md", FEATURE=feature, ID=fid, MAX_TURNS=a.max_turns,
+                                             FEATURE_FILE=f"{FEATURES}/{slice_of(queue[0])}.json"), a, root))
+        feats = load(root, order) or []
         passed = any(f.get("id") == fid and f.get("passes") for f in feats)
         total = totals[fid] = [x + y for x, y in zip(totals.get(fid, (0, 0)), (tin, tout))]
         print(f"[skift] {sum(bool(f.get('passes')) for f in feats)}/{len(feats)} passing · feature {fid} "
@@ -315,10 +343,15 @@ def main() -> int:
     root = Path(a.project_dir).resolve()
     sys.stdout.reconfigure(line_buffering=True)
     signal.signal(signal.SIGINT, on_sigint)
-    spec = (*parse_spec((root / SPEC).read_text(encoding="utf-8")),
-            (root / DECISIONS).read_text(encoding="utf-8").splitlines() if (root / DECISIONS).is_file() else [])
-    feats, reqs = load(root), spec[1]
+    text = (root / SPEC).read_text(encoding="utf-8")
+    spec = (*parse_spec(text), (root / DECISIONS).read_text(encoding="utf-8").splitlines() if (root / DECISIONS).is_file() else [])
+    if (root / LEGACY).is_file():
+        raise ValueError(f"{LEGACY} is from skift before 0.4: move each slice's entries into {FEATURES}/<slice-id>.json, then delete it")
+    reqs = spec[1]
+    order = tops(reqs)
+    feats = load(root, order)
     if a.status: return status(root, reqs, feats or [])
+    if not constraints(text): raise ValueError(f"{SPEC}: ## Constraints is missing or empty: say what the product is built with")
     scope = until_ids(reqs, a.until) if a.until else None
     uncited = [r for r in reqs if r not in {f.get("spec") for f in feats or []}]
     workloads = cut(spec, uncited if feats is None or a.append else [], a.spec_cap_tokens)
@@ -335,19 +368,17 @@ def main() -> int:
     if a.dry_run: return 0
     if changed:
         edited = " ".join(c[1] for c in changed if c[0] == "edited")
-        print("[skift] review those features in features.json: edit them, or remove them and rerun with --append"
+        print(f"[skift] review those features in {FEATURES}/: edit them, or remove them and rerun with --append"
               + (f'\n[skift] then acknowledge the edits: git commit --allow-empty -am "skift: reviewed {edited}"' if edited else ""))
         return 1
     if workloads and ((rc := decompose(a, root, spec, workloads)) or STOP):
         return rc
-    return build(a, root, scope)
+    return build(a, root, scope, order)
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except json.JSONDecodeError as e:
-        sys.exit(f"[skift] {FEATURES} is not valid JSON: {e}")
-    except (OSError, ValueError) as e:  # a missing spec, a heading that does not slug, a requirement over the cap
+    except (OSError, ValueError) as e:  # a missing spec or Constraints, a heading that does not slug, a requirement over the cap, bad JSON
         sys.exit(f"[skift] {e}")
     except KeyboardInterrupt:
         sys.exit("[skift] stopped")
