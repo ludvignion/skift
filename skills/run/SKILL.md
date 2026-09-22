@@ -7,7 +7,14 @@ argument-hint: "[loop.py flags, e.g. --append --max-iterations 10 --bypass]"
 
 # Run
 
-Run this once, from the repo root, exactly as written (three lines, one Bash call):
+If the arguments include `--status` or `--dry-run`, nothing is started: run this from the repo root,
+print its output verbatim, and stop:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/loop.py" --project-dir "$PWD" $ARGUMENTS
+```
+
+Otherwise run this once, from the repo root, exactly as written (three lines, one Bash call):
 
 ```bash
 mkdir -p .skift

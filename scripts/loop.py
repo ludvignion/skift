@@ -15,7 +15,7 @@ SESSION_TIMEOUT = 3600  # seconds per session
 
 PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
 SPEC, DECISIONS, FEATURES, PROGRESS = "spec/spec.md", "spec/decisions.md", "features.json", "progress.md"
-COMMENT_RE, DECISION_RE = re.compile(r"<!--.*?-->", re.S), re.compile(r"^- \d{4}-\d{2}-\d{2} `?([^\s`:]+)`?:")
+COMMENT_RE, DECISION_RE = re.compile(r"<!--.*?-->", re.S), re.compile(r"^- \d{4}-\d{2}-\d{2} `?([^\s`:,]+(?:,\s*[^\s`:,]+)*)`?:")
 MARK_RE, GAP_RE = re.compile(r"^skift: (initialize|reviewed) "), re.compile(r"\bfeature #?(\d+)\b", re.I)
 TOOL_KEYS = ("command", "file_path", "path", "pattern")
 STOP: list = []  # non-empty once Ctrl+C was pressed
@@ -104,11 +104,11 @@ def until_ids(reqs: dict, until: str) -> set[str]:
     if want not in tops: raise ValueError(f"--until {until}: no top-level heading under ## Features with requirements has that name ({', '.join(tops)})")
     return {r for r in reqs if r.split("/")[1] in tops[:tops.index(want) + 1]}
 
-def gaps(root: Path) -> list[str]:
-    """The lines under `## Gaps` in progress.md."""
+def section(root: Path, name: str) -> list[str]:
+    """The lines under `## <name>` in progress.md."""
     out, on = [], False
     for line in (root / PROGRESS).read_text(encoding="utf-8").splitlines() if (root / PROGRESS).is_file() else []:
-        if re.match(r"#{1,2}\s", line): on = line.strip().lower() == "## gaps"
+        if re.match(r"#{1,2}\s", line): on = line.strip().lower() == f"## {name.lower()}"
         elif on and line.strip(): out.append(line.strip())
     return out
 
@@ -118,10 +118,11 @@ def todo(feats: list[dict], scope: set | None, gap: list[str]) -> list[dict]:
     return [f for f in feats if not f.get("passes") and (scope is None or f.get("spec") in scope) and f.get("id") not in skip]
 
 def material(spec: tuple, ids: list[str]) -> dict[str, str]:
-    """Initializer input: context, requirement text, decisions citing `outline`, an id or a heading above one."""
+    """Initializer input: context, requirement text, decisions citing `outline`, an id or a heading above one;
+    a decision citing several ids counts for each."""
     ctx, reqs, decisions = spec
-    cited = [d for d in decisions if (m := DECISION_RE.match(d)) and
-             (m[1] == "outline" or any(i == m[1] or i.startswith(m[1] + "/") for i in ids))]
+    cited = [d for d in decisions if (m := DECISION_RE.match(d)) and any(
+             c == "outline" or any(i == c or i.startswith(c + "/") for i in ids) for c in re.split(r",\s*", m[1]))]
     return {"CONTEXT": ctx or "(none)", "REQUIREMENTS": "\n\n".join(f"#### {i}\n{reqs[i]}" for i in ids),
             "DECISIONS": "\n".join(cited) or "(none)"}
 
@@ -138,6 +139,27 @@ def cut(spec: tuple, ids: list[str], cap: int) -> list[list[str]]:
         else:
             out.append([i])
     return out
+
+def status(root: Path, reqs: dict, feats: list[dict]) -> int:
+    """Per top-level Features heading, in spec order: passing/total, and the gaps and findings naming its features."""
+    top = {f.get("id"): str(f.get("spec")).split("/")[1] if "/" in str(f.get("spec")) else str(f.get("spec")) for f in feats}
+    rows = {s: [0, 0, 0, 0] for s in dict.fromkeys([r.split("/")[1] for r in reqs] + list(top.values()))}
+    loose = [0, 0]  # gaps and findings that name no feature
+    for f in feats:
+        rows[top[f.get("id")]][0] += bool(f.get("passes"))
+        rows[top[f.get("id")]][1] += 1
+    for col, name in ((2, "Gaps"), (3, "Findings")):
+        for line in section(root, name):
+            named = {top[i] for i in map(int, GAP_RE.findall(line)) if i in top}
+            for s in named: rows[s][col] += 1
+            loose[col - 2] += not named
+    plural = lambda n, word: f"{n} {word}{'s' * (n != 1)}"  # noqa: E731
+    width = max(map(len, rows), default=0)
+    print(f"[skift] {sum(r[0] for r in rows.values())}/{len(feats)} features pass" + ("" if feats else f"; no {FEATURES} yet"))
+    for s, (ok, n, g, fi) in rows.items():
+        print(f"[skift] {s.ljust(width)}  {ok}/{n} passing · {plural(g, 'gap')} · {plural(fi, 'finding')}")
+    if any(loose): print(f"[skift] naming no feature: {plural(loose[0], 'gap')} · {plural(loose[1], 'finding')}")
+    return 0
 
 def git(root: Path, *args: str) -> str | None:
     r = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
@@ -254,7 +276,7 @@ def build(a, root: Path, scope: set | None) -> int:
         if STOP or (a.max_iterations and n >= a.max_iterations):
             print("[skift] stopped" if STOP else f"[skift] stopped after {a.max_iterations} iterations")
             return 0
-        feats, gap = load(root) or [], gaps(root)
+        feats, gap = load(root) or [], section(root, "Gaps")
         if not todo(feats, scope, []):
             print(f"[skift] all {len(feats)} features pass" if scope is None else
                   f"[skift] all {sum(f.get('spec') in scope for f in feats)} features up to {a.until} pass")
@@ -287,6 +309,7 @@ def main() -> int:
     p.add_argument("--append", action="store_true", help="decompose the requirements no feature cites yet, then build")
     p.add_argument("--until", metavar="HEADING", help="build only features under this top-level Features heading or an earlier one, then stop")
     p.add_argument("--bypass", action="store_true", help="sessions run with bypassPermissions instead of auto")
+    p.add_argument("--status", action="store_true", help="per slice, in spec order: passing/total, gaps and findings; spawn no session")
     p.add_argument("--dry-run", action="store_true", help="print requirement IDs, workloads and, with --until, the features to build; spawn no session")
     a = p.parse_args()
     root = Path(a.project_dir).resolve()
@@ -295,6 +318,7 @@ def main() -> int:
     spec = (*parse_spec((root / SPEC).read_text(encoding="utf-8")),
             (root / DECISIONS).read_text(encoding="utf-8").splitlines() if (root / DECISIONS).is_file() else [])
     feats, reqs = load(root), spec[1]
+    if a.status: return status(root, reqs, feats or [])
     scope = until_ids(reqs, a.until) if a.until else None
     uncited = [r for r in reqs if r not in {f.get("spec") for f in feats or []}]
     workloads = cut(spec, uncited if feats is None or a.append else [], a.spec_cap_tokens)
@@ -306,7 +330,7 @@ def main() -> int:
         print(f"[skift] workload {n}, ~{size(spec, ids):.0f} tokens: {' '.join(ids)}")
     for kind, _, msg in changed + (coverage(reqs, feats, a.max_steps) if a.dry_run and feats is not None else []):
         print(f"[skift] {kind}: {msg}")
-    for f in todo(feats, scope, gaps(root)) if a.dry_run and scope is not None and feats is not None else ():
+    for f in todo(feats, scope, section(root, "Gaps")) if a.dry_run and scope is not None and feats is not None else ():
         print(f"[skift] would build feature {f.get('id')} ({f.get('spec')}): {f.get('description', '')}")
     if a.dry_run: return 0
     if changed:

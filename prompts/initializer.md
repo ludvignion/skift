@@ -25,6 +25,11 @@ features.json is a JSON array. Add entries for the requirement IDs under Require
 - features.json {{FEATURES_JSON}}. If it exists, append; never edit, renumber or remove an existing entry.
 - The decisions under Input are settled; the entries follow them. The requirement text and the
   decisions are all there is to build: an entry never adds behaviour of its own.
+- An open point is something a requirement asks for whose user-visible outcome neither its text
+  nor a decision settles; the grill leaves open the points only one requirement depends on. Settle
+  each in that entry's steps with the simplest outcome that does what the requirement says, and
+  append `- YYYY-MM-DD <requirement ID>: [init] <decision>` with today's date to spec/decisions.md.
+  Settling an open point is not adding behaviour.
 
 Build none of the entries: write only what init.sh needs to run.
 

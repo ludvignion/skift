@@ -8,10 +8,12 @@ context window; agents never do.
 1. `/skift:init` in a new or existing repo: copies the project template, adding only what an existing
    `CLAUDE.md` or `.gitignore` lacks.
 2. Fill Verification in `CLAUDE.md`; write `spec/spec.md`. The initializer fills Stack from its Constraints.
-3. `/skift:grill`, then `/skift:grill <heading>` per section: answers land in `spec/decisions.md`.
+3. `/skift:grill`, once for the whole spec: it asks only where two or more requirements depend on the
+   answer, and records each answer verbatim in `spec/decisions.md`.
 4. `/skift:run`: cuts the spec into workloads, writes `features.json`, then builds one feature per session.
-5. Follow `.skift/run.log`; answer `## Gaps` in `progress.md`, deleting each gap's line once answered (the
-   driver skips a feature while its gap is there); after adding spec headings, `/skift:run --append`.
+5. Follow `.skift/run.log`; `/skift:run --status` prints passing/total, gaps and findings per slice.
+   Answer `## Gaps` in `progress.md`, deleting each gap's line once answered (the driver skips a
+   feature while its gap is there); after adding spec headings, `/skift:run --append`.
 
 Install:
 
