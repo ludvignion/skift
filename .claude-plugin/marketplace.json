@@ -4,15 +4,15 @@
     "name": "ludvignion"
   },
   "metadata": {
-    "description": "skift: a spec becomes a feature list; each feature is built and verified in its own fresh session.",
-    "version": "0.4.1"
+    "description": "skift: your spec becomes kanban features; each is built in its own fresh session, and every run ends with a handoff.",
+    "version": "0.5.0"
   },
   "plugins": [
     {
       "name": "skift",
       "source": "./",
-      "description": "Grill a spec, decompose it into slice files under kanban/features/, build one feature per fresh session.",
-      "version": "0.4.1",
+      "description": "Spec to kanban features, missing context asked once, one feature built per fresh session.",
+      "version": "0.5.0",
       "category": "workflow",
       "keywords": [
         "harness",

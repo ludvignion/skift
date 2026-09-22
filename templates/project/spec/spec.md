@@ -1,30 +1,13 @@
-# <product>
+# <what you want>
 
-## Purpose
-
-## Users
-
-## Constraints
-
-## Features
 <!--
-`## Features` holds the requirements. Every heading under it with text of its own is one
-requirement, and that text says what a user does and sees. A heading with only sub-headings groups
-requirements. Nest as deep as needed. Each top-level heading is a slice a user can test; order is
-build order. Every other top-level section is context: it holds across all requirements. Say
-under Purpose what the user gets: an app, a command, or files such as workbooks and reports. Say
-under Constraints what it is built with (language, framework, libraries): nothing is chosen for
-you, and /skift:run refuses a spec whose Constraints are empty.
-
-Example:
-
-    ## Features
-    ### Notes
-    #### Create a note
-    The user types a title and a body, presses Save, and sees the note at the top of the list.
-    ### Monthly report
-    #### Sales per region
-    The user opens sales.xlsx and sees one sheet per region: this month's orders and a total row.
+Write what you want here, in any shape, then run /skift:spec. It reads this file and the repo, asks
+for what is missing, and turns it into features under kanban/features/ that /skift:run builds.
+It helps to say:
+- what it is for, and who uses it;
+- what done looks like;
+- the systems it touches (databases, APIs, files, other services) and what must never change there;
+- what it is built with, if you care; otherwise Claude chooses;
+- what is out of scope.
+Never put a secret here: /skift:spec asks for secrets to go in .env.
 -->
-
-## Out of scope

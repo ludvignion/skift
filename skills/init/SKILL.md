@@ -30,4 +30,4 @@ if [ -n "$new" ]; then printf '\n%s\n' "$new" >> .gitignore; echo "added to .git
 4. Show both outputs: the files copied, the files skipped, and what was added to each.
 5. End with this line, alone:
 
-Next: write spec/spec.md (Constraints: what it is built with), optionally fill Verification in CLAUDE.md, then /skift:grill
+Next: write what you want in spec/spec.md, in any shape, then /skift:spec
