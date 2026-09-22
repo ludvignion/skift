@@ -14,13 +14,17 @@ features.json is a JSON array. Add entries for the requirement IDs under Require
 - id: integers counting up from {{NEXT_ID}}.
 - spec: the requirement ID the entry comes from, exactly as written. Every requirement ID under
   Requirements is cited by at least one entry.
-- description: one user-visible behaviour per entry.
-- steps: what a user does and sees, each checkable by using the product. At most {{MAX_STEPS}};
-  a behaviour that needs more is two entries.
+- description: one sentence: what the user can do or get once the entry is built.
+- steps: what a user does and sees, each checkable by using the product. At most {{MAX_STEPS}}.
+- Size: an entry covers one statement of a requirement's text (a bullet, or a paragraph when it
+  has no bullets), and every decision that refines that statement becomes steps of that entry,
+  never an entry of its own. Statements that cannot be checked apart share one entry. Only a
+  statement that needs more than {{MAX_STEPS}} steps becomes two entries.
 - Every entry is usable on its own: whoever reads only that entry knows what to build and how to check it.
 - passes: false, on every entry.
 - features.json {{FEATURES_JSON}}. If it exists, append; never edit, renumber or remove an existing entry.
-- The decisions under Input are settled; the entries follow them.
+- The decisions under Input are settled; the entries follow them. The requirement text and the
+  decisions are all there is to build: an entry never adds behaviour of its own.
 
 Build none of the entries: write only what init.sh needs to run.
 

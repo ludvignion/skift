@@ -16,7 +16,7 @@ You work on one feature of this project, then hand over. Your budget is {{MAX_TU
    steps of one of them end to end with the Verification method in CLAUDE.md; if it fails, fix
    that first and note it in `## Log`.
 2. If `## Current` names this feature, continue from its next step.
-3. Implement only this feature. Write tests as you see fit; tests do not decide `passes`.
+3. Implement only this feature, and nothing its description and steps do not ask for. Write tests as you see fit; tests do not decide `passes`.
 4. Do this feature's steps by using the product as its user would, with the Verification method
    in CLAUDE.md. Set this feature's `passes` to true only if every step was observed. That flip is
    the only edit ever made to features.json.

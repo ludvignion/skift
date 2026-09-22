@@ -35,13 +35,16 @@ base letter (ø, ß, non-Latin) has no ID: scripts/loop.py refuses the spec unti
    - A scope: read that heading's lines up to the next heading of the same or higher level, and
      the context sections (every top-level section except `## Features`). Never load the rest of
      the spec. Cite each decision with the most specific requirement ID it settles.
-4. For every open point: search src/, tests/, features.json, progress.md and spec/decisions.md
-   first; what the repo or the spec already answers is settled, never asked and never restated.
-   Then apply one test: would the user notice the difference in the product? No: decide it,
-   record it as `[grill]`, never show it. Yes: ask.
-5. Ask in numbered rounds of related questions, each with a recommended answer; "all
-   recommended" is a valid reply. No cap, no floor. Never ask about naming, layout, technical
-   choices, or anything under Out of scope. Print only the questions and the Next line.
+4. An open point is something the spec asks for whose user-visible outcome it leaves undecided.
+   What the spec does not ask for is never an open point: never propose it, not even as a
+   recommended answer. For every open point: search src/, tests/, features.json, progress.md and
+   spec/decisions.md first; what the repo or the spec already answers is settled, never asked and
+   never restated. Then apply one test: would the user notice the difference in the product? No:
+   decide it, record it as `[grill]`, never show it. Yes: ask.
+5. Ask in numbered rounds of related questions, each with a recommended answer: the simplest
+   outcome that does what the spec says, adding nothing it does not ask for. "All recommended" is
+   a valid reply. No cap, no floor. Never ask about naming, layout, technical choices, or anything
+   under Out of scope. Print only the questions and the Next line.
 6. Append each decision to spec/decisions.md as one line, in the user's meaning:
    `- YYYY-MM-DD <requirement ID or outline>: <decision>` with today's date. A decision you made
    yourself starts with `[grill] `: `- YYYY-MM-DD <requirement ID or outline>: [grill] <decision>`.
