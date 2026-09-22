@@ -10,8 +10,9 @@ argument-hint: "[spec .md file or folder, default spec/spec.md] [--next [N]]"
 Arguments: `$ARGUMENTS`. The spec is the path given, or spec/spec.md. With `--next [N]` (N is 1 when
 left out), the spec is the one kanban/source.json names, and only the next N slices without features
 get them. The user wrote the spec in any shape and any size. You turn it into features that fresh
-Claude sessions build one at a time. Each session sees one feature, the text of the spec sections it
-cites, kanban/context.md and CLAUDE.md: what you write is all they know of the intent.
+Claude sessions build one at a time. Each session builds one feature, reads the spec (a large one
+through the index), kanban/context.md and CLAUDE.md, and decides how to build it: what you write says
+what must work and what is fixed, never how.
 
 `L` below stands for `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/loop.py" --project-dir "$PWD"`.
 
@@ -40,7 +41,10 @@ cites, kanban/context.md and CLAUDE.md: what you write is all they know of the i
    - what done looks like, where the spec leaves it open across features;
    - the stack, only when neither the spec nor the repo decides it and the user may care;
    - contradictions in the spec: quote both sections by id and recommend one.
-   Everything else you decide as a good engineer would, and record as an assumption.
+   Everything else is the call of the sessions that build it. Record as an assumption only what they
+   must agree on about what a user sees or a system shows, such as an address, a file format or a
+   default; never how to build it (data model, algorithm, what a model does and what code does,
+   libraries, file layout) unless the spec or the user says so.
 4. Ask in numbered rounds of related questions, costliest to get wrong first, each with a
    recommended answer. Valid replies: an answer, "all recommended", "decide it" (the recommended
    answer becomes an assumption), or "enough" (stop asking; the recommended answer of every
@@ -49,8 +53,10 @@ cites, kanban/context.md and CLAUDE.md: what you write is all they know of the i
    - `## Systems`: each system the work touches, how to reach it, the .env keys it needs (never
      their values), and what must never change there;
    - `## Answers`: each answer as `- YYYY-MM-DD Q: <question as asked> A: <answer as given>`; for
-     "all recommended", A is the recommended answer followed by ` (recommended)`;
-   - `## Assumptions`: each thing you decided, as `- YYYY-MM-DD <assumption>`.
+     "all recommended", A is the recommended answer followed by ` (recommended)`. Answers bind every
+     session;
+   - `## Assumptions`: each thing you decided, as `- YYYY-MM-DD <assumption>`. Assumptions are
+     defaults: a session that sees a better way builds it and records why.
 6. Write kanban/map.md: every slice of the whole spec, in build order, and what is not built.
 
        # Map

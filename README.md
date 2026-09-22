@@ -2,10 +2,12 @@
 
 You write what you want in a Markdown file. `/skift:spec` reads it and your repo, asks only for the
 context that is missing, and turns it into kanban features. `/skift:run` builds them, one fresh
-Claude session per feature, and Claude builds each the way it would on its own. The spec fixes what
-gets built: nothing it does not ask for. How it gets built is Claude's call. `--until` stops after a
-slice so you can review, and every run ends with a handoff that says what you can now do and what
-to check. Every change to skift is checked against this paragraph.
+Claude session per feature, and Claude builds each the way it would on its own, for the whole spec,
+not only its feature. The spec fixes what gets built: nothing it does not ask for. How it gets built
+is Claude's call, even where the spec or an assumption says otherwise: Claude takes the better way
+and the handoff tells you where. `--until` stops after a slice so you can review, and every run ends
+with a handoff that says what you can now do and what to check. Every change to skift is checked
+against this paragraph.
 
 It works for new products and for regular work in existing repos: apps, commands, files, and work
 against databases, APIs and other systems. And it works for specs of any size: a large one, such as a
@@ -57,7 +59,7 @@ wins inside that project: remove it with `claude plugin uninstall skift@skift --
 | --- | --- |
 | `/skift:run` | Build every feature that does not pass, one fresh session each. |
 | `/skift:run --until <slice>` | Build up to the end of that slice, then stop. The slice by file name (`01-orders`), name (`orders`) or number (`1`). |
-| `/skift:run --status` | List every feature under its slice: passing or open, gaps, findings. Starts nothing. |
+| `/skift:run --status` | List every feature under its slice: passing or open, gaps, findings, deviations. Starts nothing. |
 | `/skift:run --dry-run` | List the features a run would build, skip or refuse, and the slices not detailed yet. Starts nothing. |
 | `/skift:spec --next [N]` | Write the features of the next N slices that have none yet (default 1). |
 | `tail -f .skift/run.log` | Follow the running driver. |
@@ -79,6 +81,8 @@ Every run ends with one, about the product, never about files or code:
 - **What you can do now**: one line per feature built in this run, in plain words.
 - **Open it**: where the product is, from `./init.sh`, which the driver runs when the run ends.
 - **Check it**: each feature built, with its steps as boxes to tick.
+- **Built differently than the spec says**: where a session took a better way than the spec, a
+  step or an assumption said, why, and how the steps it changed now read. Check these too.
 - **Decided for you**: what the sessions settled that the spec left open. Check these too.
 - **Not built**: what is left, and why: waiting for your answer, stuck, or not started.
 - **The spec changed**: built features whose sections changed, and sections new in the spec.
@@ -95,7 +99,8 @@ id (a requirement id such as `REQ-12` in the heading, else the heading path), it
 line. A long section with no subheadings is cut into parts. A large spec is never read whole: the
 index is the map, and sections are opened one at a time. `kanban/map.md` places every section with
 text in a slice, in Context or in Out of scope; `--mark-spec` refuses a map or features that drop a
-section. Each coding session gets only the text of the sections its feature cites.
+section. Each coding session gets the text of the sections its feature cites, and reads the rest so
+it builds for the whole product: a small spec whole, a large one through the index.
 
 Each section's hash is recorded when the features are written. After a spec edit, a run refuses
 only the features whose cited sections changed, and says which; the rest build on. `--status` marks
@@ -105,7 +110,8 @@ those. When a client sends a new version, replace the files and rerun `/skift:sp
 ## Files
 
 - `spec/spec.md` (or your own path): what you want, in your words. skift never edits it.
-- `kanban/context.md`: systems, your answers, assumptions. Every session reads it.
+- `kanban/context.md`: systems, your answers, assumptions. Every session reads it: your answers and
+  the systems bind it, the assumptions are defaults it may build differently, saying why.
 - `kanban/map.md`: every slice in build order with the sections it covers, plus Context and Out of
   scope.
 - `kanban/features/NN-<slice>.json`: the features of the detailed slices, each with an id, a
@@ -113,7 +119,7 @@ those. When a client sends a new version, replace the files and rerun `/skift:sp
   renaming, features by moving them in a file.
 - `kanban/index.md`: the spec's sections, generated; `kanban/source.json`: which spec, and each
   section's hash when the features were written.
-- `progress.md`: `## Current` (the handover), `## Log`, `## Built`, `## Decided`, `## Gaps` and
-  `## Findings`.
+- `progress.md`: `## Current` (the handover), `## Log`, `## Built`, `## Decided`, `## Deviations`,
+  `## Gaps` and `## Findings`.
 - `CLAUDE.md`: Stack, Run commands and Conventions, filled by the first session; Verification, yours.
 - `.env`: secrets, never committed. `.skift/`: the driver's log, pid and handoff, ignored by git.

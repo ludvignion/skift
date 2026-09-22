@@ -21,7 +21,7 @@ CHUNK_LINES = 80  # own text longer than this is cited in parts, <id>~1, <id>~2,
 PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
 FEATURES, MAP, INDEX, SOURCE = "kanban/features", "kanban/map.md", "kanban/index.md", "kanban/source.json"
 PROGRESS, HANDOFF, LEGACY = "progress.md", ".skift/handoff.md", "features.json"  # LEGACY: the feature file before 0.4
-SECTIONS = ("Current", "Log", "Built", "Decided", "Gaps", "Findings")  # of progress.md
+SECTIONS = ("Current", "Log", "Built", "Decided", "Deviations", "Gaps", "Findings")  # of progress.md
 FILE_RE, NOTE_RE = re.compile(r"^(\d+)-[a-z0-9]+(?:-[a-z0-9]+)*$"), re.compile(r"\bfeature #?(\d+)\b", re.I)
 HEADING_RE, FENCE_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$"), re.compile(r"^\s*(```|~~~)")
 EXPLICIT_ID = re.compile(r"\b(?:REQ|FR|NFR|US|UC|BR)-\d{1,6}\b")  # requirement ids a heading may carry
@@ -240,19 +240,23 @@ def uncovered_new(rows: dict, mp: dict, ch: dict) -> list[str]:
     return [i for i in units(rows) if i in ch["added"] and not any(under(i, a, parents) for a in held)]
 
 def section(root: Path, name: str) -> list[str]:
-    """The lines under `## <name>` in progress.md."""
+    """The items under `## <name>` in progress.md, one per bullet, its wrapped lines joined."""
     out, on = [], False
     for line in (root / PROGRESS).read_text(encoding="utf-8").splitlines() if (root / PROGRESS).is_file() else []:
         if re.match(r"#{1,2}\s", line): on = line.strip().lower() == f"## {name.lower()}"
-        elif on and line.strip(): out.append(line.strip())
+        elif on and line.strip():
+            if out and not re.match(r"\s*[-*]\s", line): out[-1] += " " + line.strip()
+            else: out.append(line.strip())
     return out
 
 def notes(root: Path, name: str) -> dict[int, list[str]]:
-    """The lines under `## <name>` in progress.md by the feature they name, without the `- feature N:` prefix."""
+    """The items under `## <name>` in progress.md by the feature they start with (`- feature N:`), else by every
+    feature they name, without that prefix."""
     out: dict[int, list[str]] = {}
     for line in section(root, name):
-        text = re.sub(r"^-\s*(\d{4}-\d{2}-\d{2}\s+)?feature #?\d+\s*:\s*", "", line, flags=re.I)
-        for i in NOTE_RE.findall(line): out.setdefault(int(i), []).append(text)
+        lead = re.match(r"^-\s*(\d{4}-\d{2}-\d{2}\s+)?feature #?(\d+)\s*:\s*", line, re.I)
+        text = line[lead.end():] if lead else line
+        for i in [lead[2]] if lead else NOTE_RE.findall(line): out.setdefault(int(i), []).append(text)
     return out
 
 def ensure_progress(root: Path) -> None:
@@ -288,11 +292,13 @@ def todo(feats: list[dict], scope: set | None, gapped: set) -> list[dict]:
 def plural(n: int, word: str) -> str:
     return f"{n} {word}{'s' * (n != 1)}"
 
+def spec_chars(root: Path, spec: str) -> int:
+    return sum(len(p.read_text(encoding="utf-8", errors="replace")) for p in spec_files(root, spec))
+
 def build_index(root: Path, spec: str) -> int:
     """--index: write kanban/index.md, and say whether /skift:spec reads the spec whole or works from the index."""
-    rows, files = index(root, spec), spec_files(root, spec)
+    rows, files, chars = index(root, spec), spec_files(root, spec), spec_chars(root, spec)
     write_index(root, spec, rows)
-    chars = sum(len(p.read_text(encoding="utf-8", errors="replace")) for p in files)
     print(f"[skift] {plural(len(rows), 'section')}, {len(units(rows))} with text, from {plural(len(files), 'file')}, {chars} characters: {INDEX}")
     print("[skift] small: read the spec whole, and write the features of every slice now" if chars <= SMALL_SPEC_CHARS else
           "[skift] large: work from the index, read sections with --show, and write the features of the first slice only")
@@ -332,15 +338,16 @@ def status(root: Path) -> int:
     """--status: per slice, in build order: passing/total, gaps and findings, then each feature; slices not
     detailed yet; and what changed in the spec."""
     st = state(root)
-    feats, gaps, found = st["feats"], notes(root, "Gaps"), notes(root, "Findings")
+    feats, gaps, found, dev = st["feats"], notes(root, "Gaps"), notes(root, "Findings"), notes(root, "Deviations")
     print(f"[skift] {sum(f['passes'] for f in feats)}/{len(feats)} features pass · {len(st['detailed'])} of {plural(len(st['map']['slices']), 'slice')} detailed")
     for s in st["map"]["slices"]:
         if s["name"] not in st["detailed"]:
             print(f"[skift] {s['name']}  not detailed yet: {s['what']}")
             continue
         mine = [f for f in feats if f["_slice"] == s["name"]]
-        g, fi = (sum(len(n.get(f["id"], [])) for f in mine) for n in (gaps, found))
-        print(f"[skift] {s['name']}  {sum(f['passes'] for f in mine)}/{len(mine)} passing · {plural(g, 'gap')} · {plural(fi, 'finding')}")
+        g, fi, dv = (sum(len(n.get(f["id"], [])) for f in mine) for n in (gaps, found, dev))
+        print(f"[skift] {s['name']}  {sum(f['passes'] for f in mine)}/{len(mine)} passing · {plural(g, 'gap')} · "
+              f"{plural(fi, 'finding')} · {plural(dv, 'deviation')}")
         for f in mine:
             marks = ("  (gap)" if f["id"] in gaps else "") + (("  (spec changed since it passed)" if f["passes"] else "  (spec changed)") if st["affected"][f["id"]] else "")
             print(f"[skift]   [{'x' if f['passes'] else ' '}] {f['id']}  {f['description']}{marks}")
@@ -412,6 +419,10 @@ def fill(name: str, **kw) -> str:
 def build(a: argparse.Namespace, root: Path, run: dict) -> str:
     """One session per open feature until none is left; returns why it stopped: done, gaps, stuck, stopped or limit."""
     st, streak, fid = run["state"], 0, None
+    read_spec = ("Read all of it, and kanban/map.md for the order the rest is built in." if spec_chars(root, st["spec"]) <= SMALL_SPEC_CHARS else
+                 f"It is too large to read whole: read kanban/map.md and {INDEX}, which lists every section with its file "
+                 "and lines, then read the sections that bear on how this feature should be built, including those of the "
+                 "features that build on it.")
     for n in itertools.count():
         if STOP: return "stopped"
         if a.max_iterations and n >= a.max_iterations: return "limit"
@@ -423,7 +434,7 @@ def build(a: argparse.Namespace, root: Path, run: dict) -> str:
         print(f"[skift] feature {fid} ({f['_slice']}), session {streak}: {f['description']}")
         source = "\n\n".join(text_of(root, st["rows"][i]) for i in f.get("source") or [] if i in st["rows"])
         prompt = fill("coding.md", FEATURE=json.dumps({k: f[k] for k in ("id", "description", "steps")}, indent=2, ensure_ascii=False),
-                      ID=fid, MAX_TURNS=a.max_turns, FEATURE_FILE=f"{FEATURES}/{f['_slice']}.json", SPEC=st["spec"],
+                      ID=fid, MAX_TURNS=a.max_turns, FEATURE_FILE=f"{FEATURES}/{f['_slice']}.json", SPEC=st["spec"], READ_SPEC=read_spec,
                       SOURCE=source or "(the feature cites no section; its description and steps are all there is)")
         line = usage(session(prompt, a, root))[2]
         feats = load(root)
@@ -475,7 +486,7 @@ def handoff(root: Path, a: argparse.Namespace, outcome: str, run: dict, detail: 
     order = run.get("order") or list(dict.fromkeys(f["_slice"] for f in feats))
     detailed = st.get("detailed") or {f["_slice"] for f in feats}
     by_id = {f["id"]: f for f in feats}
-    built, decided, gaps = notes(root, "Built"), notes(root, "Decided"), notes(root, "Gaps")
+    built, decided, gaps, dev = notes(root, "Built"), notes(root, "Decided"), notes(root, "Gaps"), notes(root, "Deviations")
     passed = [by_id[i] for i in dict.fromkeys(run["passed"]) if i in by_id]
     wanted = [f for f in feats if scope is None or f["_slice"] in scope]
     last = max(scope, key=order.index) if scope else None
@@ -501,8 +512,9 @@ def handoff(root: Path, a: argparse.Namespace, outcome: str, run: dict, detail: 
             out.append(f"  {s}")
             for f in (f for f in passed if f["_slice"] == s):
                 out += [f"    [ ] {f['id']}  {f['description']}"] + [f"          - {step}" for step in f["steps"]]
-        if mine := [(f["id"], text) for f in passed for text in decided.get(f["id"], [])]:
-            out += ["", "Decided for you, check these too"] + [f"  - {text} (feature {i})" for i, text in mine]
+        for title, kept in (("Built differently than the spec says, check these too", dev), ("Decided for you, check these too", decided)):
+            if mine := [(f["id"], text) for f in passed for text in kept.get(f["id"], [])]:
+                out += ["", title] + [f"  - {text} (feature {i})" for i, text in mine]
     elif outcome == "done" and wanted:
         out += ["", "Nothing new was built: every feature in scope already passed."]
     if outcome not in ("refused", "done") and (left := [f for f in wanted if not f["passes"]]):

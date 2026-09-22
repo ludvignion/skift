@@ -1,6 +1,6 @@
 {
   "name": "skift",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Turn a spec in any Markdown into kanban features, ask only for missing context, then build one feature per fresh session, with a handoff after every run.",
   "author": {
     "name": "ludvignion"
