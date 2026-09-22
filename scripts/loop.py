@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """skift driver: spec/spec.md -> kanban/features/<slice>.json -> one fresh `claude -p` per feature until all pass.
-Decomposes when kanban/features/ has no file or with --append, then builds; --until stops after one slice.
+Decomposes when kanban/features/ has no file or with --append, then stops for review; the next run builds,
+and --until stops after one slice.
 A feature named under ## Gaps in progress.md is skipped. A spec change under existing features stops
 the run first. Ctrl+C stops after the current session; a second Ctrl+C stops now."""
 import argparse, contextlib, itertools, json, os, re, signal, subprocess, sys, threading, time, unicodedata  # noqa: E401
@@ -371,8 +372,11 @@ def main() -> int:
         print(f"[skift] review those features in {FEATURES}/: edit them, or remove them and rerun with --append"
               + (f'\n[skift] then acknowledge the edits: git commit --allow-empty -am "skift: reviewed {edited}"' if edited else ""))
         return 1
-    if workloads and ((rc := decompose(a, root, spec, workloads)) or STOP):
-        return rc
+    if workloads:  # the features are written, then the run stops: the user reviews them before any build
+        if (rc := decompose(a, root, spec, workloads)) or STOP: return rc
+        status(root, reqs, load(root, order) or [])
+        print(f"[skift] features written to {FEATURES}/: review them, then /skift:run, or /skift:run --until <slice>")
+        return 0
     return build(a, root, scope, order)
 
 if __name__ == "__main__":

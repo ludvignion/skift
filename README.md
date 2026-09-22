@@ -1,7 +1,8 @@
 # skift
 
 skift turns a spec into chunks of work that Claude builds, one per fresh session, in spec order.
-`/skift:run` builds everything; `/skift:run --until <slice>` stops there so you can review. Nothing
+The first `/skift:run` writes the features and stops so you can review them; after that
+`/skift:run` builds everything, and `/skift:run --until <slice>` stops there so you can review. Nothing
 gets built that the spec does not ask for, and nothing gets chosen that it does not name. Every
 change to skift is checked against this paragraph.
 
@@ -39,24 +40,26 @@ wins inside that project: remove it with `claude plugin uninstall skift@skift --
 4. `/skift:grill`, once for the whole spec. It asks only where a wrong guess would cost rework across
    features, costliest first, each question with a recommended answer. Reply with an answer, "all
    recommended", "decide it", or "enough" to stop. Answers land verbatim in `spec/decisions.md`.
-5. `/skift:run --until <first slice>`: the first run writes the features for the whole spec, then
-   builds the first slice and stops. Check that slice with `/skift:run --status` and the steps of
+5. `/skift:run`: writes the features for the whole spec into `kanban/features/` and stops. Review
+   them with `/skift:run --status` and the slice files; edit or reorder them if needed.
+6. `/skift:run --until <first slice>`: builds that slice and stops. Check it against the steps of
    its features, then run `--until` the next slice, or plain `/skift:run` for the rest.
 
 ## Running
 
-`/skift:run` starts the driver in the background and returns at once. With no flag it writes the
-features if there are none, then builds every feature that does not pass, one fresh session each.
+`/skift:run` starts the driver in the background and returns at once. When there are no features
+yet, it writes them and stops. When there are, it builds every feature that does not pass, one fresh
+session each.
 
 | Command | What it does |
 | --- | --- |
-| `/skift:run` | Write the features if needed, then build all of them. |
+| `/skift:run` | No features yet: write them, then stop for review. Otherwise: build all that do not pass. |
 | `/skift:run --until <slice>` | Build up to the end of that slice (heading text or ID), then stop. |
 | `/skift:run --status` | List every feature under its slice: passing or open, gaps, findings. Starts nothing. |
 | `/skift:run --dry-run` | Print the requirement IDs and workloads; with `--until`, the features it would build. Starts nothing. |
-| `/skift:run --append` | After adding headings to the spec: write features for the new ones, then build. |
+| `/skift:run --append` | After adding headings to the spec: write features for the new ones, then stop for review. |
 | `tail -f .skift/run.log` | Follow the running driver. |
-| `kill -INT $(cat .skift/run.pid)` | Stop after the current session; send it again to stop at once. Stopped while the features are being written, it stops before building anything. |
+| `kill -INT $(cat .skift/run.pid)` | Stop after the current session; send it again to stop at once. |
 
 To continue after a stop, run `/skift:run` again: passing features are skipped, and a feature left
 half-done resumes from `## Current` in `progress.md`.
@@ -68,6 +71,7 @@ More flags, with their defaults: `--max-iterations N` (coding sessions before st
 
 ## When it stops
 
+- **Features written**: the log lists them per slice. Review `kanban/features/`, then run again to build.
 - **All features pass**, or all up to `--until`: review, then run the next slice.
 - **Gaps**: a session found the spec silent on something the user would see. It wrote the question
   under `## Gaps` in `progress.md` and the driver skips that feature. Answer it (in the spec or in
