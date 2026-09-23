@@ -34,7 +34,7 @@ What binds you, and what is yours:
 - Secrets are in .env: never print them, never commit them.
 
 Before the first ticket:
-1. Run /skift:status. A ticket marked `(spec changed)` is not built until /skift:spec and
+1. Run /skift:status. A ticket marked `(spec changed)` is not built until /skift:grill and
    /skift:kanban update it; a task with no tickets yet needs /skift:kanban <n>. Say which.
 2. Read kanban/context.md, and in progress.md `## Current`, `## Deviations` and the last 20 lines of
    `## Log`, and `git log --oneline -20`. Earlier deviations are the design as built: build on them.
@@ -74,6 +74,13 @@ task for the ones in its `after`):
    message naming the ticket.
 8. If a ticket cannot be finished (stuck, or out of room), hand over as in 7, set the status back to
    `ready`, and stop there, saying why.
+
+## Decisions
+kanban/context.md holds the purpose, what it is built with, the systems, the answers the user
+gave and the assumptions skift made. Read it before building any ticket. Answers and assumptions
+bind: a ticket that needs one changed says so under its `## Notes` when set to in_review, and the
+line in context.md changes before the ticket does. Any skill that keeps a decisions file uses
+kanban/context.md. Never create spec/decisions.md.
 
 When done, tell the user about the product, never files or code: for each ticket built, what they
 can now do; how to open it (what `./init.sh` prints); its `(human)` criteria as boxes to tick; and

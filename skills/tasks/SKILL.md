@@ -8,7 +8,7 @@ argument-hint: "[first task number]"
 # Tasks
 
 Arguments: `$ARGUMENTS`, the number to start at; otherwise the next free number in kanban/tasks/.
-Input: kanban/index.md and the spec it names, after `/skift:spec`. Output: one file per row under
+Input: kanban/index.md and the spec it names, after `/skift:grill`. Output: one file per row under
 kanban/tasks/, kanban/deferred.md, and `L --coverage` printing `0 problems`. A task is a workstream:
 its own outcome, its own tickets, and `after` for the tasks it waits on. Tasks that wait on nothing
 can be built in any order, or by different people.
@@ -17,8 +17,9 @@ can be built in any order, or by different people.
 
 ## Steps
 
-1. Read kanban/index.md, then the spec: whole if `L --index` called it small, else section by
-   section with `L --show` and `L --grep`. No index: print `Next: /skift:spec <your spec>` and stop.
+1. Run `L --check-spec <spec>`. A problem it names, or no index yet: print `Next: /skift:grill` and
+   stop, so the spec is settled before it is cut up. Then read kanban/index.md and the spec: whole
+   if `L --index` called it small, else section by section with `L --show` and `L --grep`.
    Read kanban/context.md and any task that already exists.
 2. Round 1: print the two tables, letter the rows, and nothing else. End the turn there.
 

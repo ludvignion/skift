@@ -1,8 +1,9 @@
 # skift
 
-You never write the spec. You bring what you have: nothing, a one-line idea, notes, or a client
-document. skift checks it against what a spec must hold, has a grill write in whatever is missing,
-cuts it into tasks you rank, and writes each task's tickets with acceptance criteria. Then it stops:
+You write the spec, or as much of it as you can. skift checks what you wrote against the six
+sections it builds from and asks only for what is missing: nothing when the spec holds up, a few
+questions when it nearly does, a full grill when it is an idea, notes or an empty file. Then it cuts
+the spec into tasks you rank, and writes each task's tickets with acceptance criteria. Then it stops:
 skift builds nothing. You tell Claude, in your own session, what to build: one ticket, one task, or
 every open ticket in order. Claude builds each the way it would on its own, for the whole spec, not
 only its ticket. The criteria fix what must hold: nothing the spec does not ask for. How it gets
@@ -35,23 +36,22 @@ wins inside that project: remove it with `claude plugin uninstall skift@skift --
 1. `/skift:init` in a new or existing repo. It copies the project template (`CLAUDE.md`,
    `.gitignore`, `spec/spec.md`, an empty `kanban/`), adding only what is missing, and never
    overwrites a file.
-2. Optional: put what you have in `spec/spec.md`, or any `.md` file or folder: an idea, rough notes,
-   or a client document. Leave it empty to start from nothing. Never put secrets in it.
-3. `/skift:spec [path]`. It indexes the spec, then checks it against the standard in
-   `templates/spec-standard.md`: purpose, the parts in build order, what done looks like for each,
-   the systems it touches, what it is built with, what is out of scope, and the rules every
-   statement follows. The check runs in two layers, and both are printed:
-   - fixed checks: is there anything to build from, does a skift-shaped spec carry every heading and
-     a `Done:` under every part, and where are the vague words and anything that looks like a
-     secret;
+2. Write what you want in `spec/spec.md`, in the six sections it already holds: Purpose, Done looks
+   like, Systems, Built with (optional), Parts in build order, Out of scope. Fill in as much as you
+   can and leave the rest; a line, rough notes or an empty file are fine too, and a document of your
+   own can go in `spec/` instead, where it is never rewritten. Never put secrets in it: the `.env`
+   key name goes under Systems, the value in `.env`.
+3. `/skift:grill [path]`. It indexes the spec and checks it in two layers, printing both:
+   - fixed checks: is there anything to build from, does a six-section spec carry every section and
+     a bullet under every part, and where are the vague words and anything that looks like a secret;
    - a trial run: Claude drafts the tasks and their criteria without writing anything, and every
      place it would have to guess, where the guess would change what gets built, is a gap, with the
-     line, the guess and the item it breaks.
+     line, the guess and the rule it breaks.
 
-   Any gap and it grills you, with your `grill` skill if you have one, else itself, and writes the
-   answers into the spec. A document you brought is never rewritten: what is missing lands beside
-   it. It then asks how to reach each system and which `.env` keys hold the secrets, and writes
-   `kanban/context.md`.
+   Then it asks in proportion to what it found: nothing when there are no gaps, one round of at most
+   five questions for a few narrow ones, and a full grill — round after round until the six sections
+   hold up — for an idea, notes or an empty file. Your answers go into the spec, in your words, and
+   what it settled itself into `kanban/context.md`, which every build reads.
 4. `/skift:tasks`. Round 1 is one table — task, outcome, spec sections, what it comes after — plus
    the sections it would defer, each with a reason, and every section of the spec appears exactly
    once. Reply `go` for that order, or `go, order: C, A, B` for yours. Round 2 writes
@@ -80,7 +80,7 @@ wins inside that project: remove it with `claude plugin uninstall skift@skift --
 | Command | What it does |
 | --- | --- |
 | `/skift:init` | Copy the project template, adding only what is missing. |
-| `/skift:spec [path]` | Check the spec against the standard, grill in what is missing, index it, and write `kanban/context.md`. |
+| `/skift:grill [path]` | Check the spec, ask only for what is missing, write it into the spec, and write `kanban/context.md`. A spec that holds up gets no questions. |
 | `/skift:tasks [first number]` | Cut the spec into tasks: one table you rank, then the task files and `kanban/deferred.md`. |
 | `/skift:kanban <n>` or `--next [N]` | Write one task's tickets, with acceptance criteria. |
 | `/skift:status` | The board: every task, its tickets and their status, the tasks with no tickets, the deferred sections, and what the spec changed under. Starts nothing. Claude runs it before it builds. |
@@ -121,7 +121,7 @@ over under `## Current` in `progress.md`, and the next build continues from ther
 
 ## Large specs and spec changes
 
-`/skift:spec` indexes the spec by its headings into `kanban/index.md`: one line per section, with an
+`/skift:grill` indexes the spec by its headings into `kanban/index.md`: one line per section, with an
 id (a requirement id such as `REQ-12` in the heading, else the heading path), its lines and its first
 line. A long section with no subheadings is cut into parts. A large spec is never read whole: the
 index is the map, and sections are opened one at a time. Every section with text of its own lands in
@@ -130,21 +130,23 @@ refuses anything else, so nothing in the spec is dropped in silence.
 
 Each section's hash is recorded when the tickets are written. After a spec edit, `/skift:status`
 marks every task and ticket whose sections changed and lists sections new in the spec that no task
-covers. Claude builds none of the marked tickets until you rerun `/skift:spec`, then `/skift:kanban`
+covers. Claude builds none of the marked tickets until you rerun `/skift:grill`, then `/skift:kanban`
 for the tasks it named. When a client sends a new version, replace the files and start again from
-`/skift:spec`.
+`/skift:grill`.
 
 ## Files
 
-- `spec/spec.md`, or your own path or folder: the spec. Written by the grill from your answers, or
-  brought by you. A document you brought is never edited; what it lacks is written beside it.
+- `spec/spec.md`, or your own path or folder: the spec, in six sections: Purpose, Done looks like,
+  Systems, Built with, Parts in build order, Out of scope. Yours to write, and `/skift:grill` fills
+  in what you left out. A document you brought is never edited; what it lacks is written beside it.
 - `kanban/index.md`: the spec's sections, generated. `kanban/source.json`: which spec, and each
   section's hash when the tickets were written. `kanban/deferred.md`: the sections no task covers,
   each with a reason.
 - `kanban/tasks/<n>-<slug>.md`, `kanban/tickets/<n>.<m>-<slug>.md`: the workstreams and their
   requirements. Reorder by renaming; the numbers are the build order.
-- `kanban/context.md`: systems, your answers, assumptions. Claude reads it for every ticket: your
-  answers and the systems bind it, the assumptions are defaults it may build differently, saying why.
+- `kanban/context.md`: the purpose, what it is built with, the systems, your answers and skift's
+  assumptions, each with its reason. Claude reads it for every ticket, and answers and assumptions
+  bind: a ticket that needs one changed says so, and the line here changes first.
 - `progress.md`: `## Current` (the handover), `## Log`, `## Decided`, `## Deviations`, `## Gaps` and
   `## Findings`.
 - `CLAUDE.md`: Stack, Run commands and Conventions, filled when the first ticket is built;
@@ -152,5 +154,5 @@ for the tasks it named. When a client sends a new version, replace the files and
 - `.env`: secrets, never committed.
 
 From 0.9 or earlier: the slices in `kanban/map.md` and the features in `kanban/features/` are not
-read any more. Rerun `/skift:init`, then `/skift:spec`, `/skift:tasks` and `/skift:kanban`, and
+read any more. Rerun `/skift:init`, then `/skift:grill`, `/skift:tasks` and `/skift:kanban`, and
 delete the old files once the board looks right.

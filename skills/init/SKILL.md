@@ -30,4 +30,4 @@ if [ -n "$new" ]; then printf '\n%s\n' "$new" >> .gitignore; echo "added to .git
 4. Show both outputs: the files copied, the files skipped, and what was added to each.
 5. End with this line, alone:
 
-Next: /skift:spec, with an idea, notes or a client document in spec/spec.md if you have one
+Next: fill in spec/spec.md, or run /skift:grill and it asks you for what is missing

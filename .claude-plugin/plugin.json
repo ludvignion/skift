@@ -1,7 +1,7 @@
 {
   "name": "skift",
-  "version": "1.0.0",
-  "description": "Spec in, kanban out: check a spec of any size against what skift needs, grill in what is missing, cut it into tasks, and write each task's tickets with acceptance criteria. It builds nothing.",
+  "version": "1.1.0",
+  "description": "Your spec in, tasks and tickets out: /skift:grill asks only for what the spec is missing, /skift:tasks cuts it into workstreams and /skift:kanban writes each one's tickets with acceptance criteria. It builds nothing.",
   "author": {
     "name": "ludvignion"
   },
@@ -9,7 +9,7 @@
   "license": "MIT",
   "skills": [
     "./skills/init",
-    "./skills/spec",
+    "./skills/grill",
     "./skills/tasks",
     "./skills/kanban",
     "./skills/status"

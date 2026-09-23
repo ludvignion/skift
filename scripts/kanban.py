@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""skift kanban. skift turns a spec into requirements and stops: /skift:spec indexes the spec and has it
-grilled where it is too thin, /skift:tasks cuts it into tasks under kanban/tasks/ (one workstream each,
+"""skift kanban. skift turns a spec into requirements and stops: /skift:grill checks the spec the user
+filled in and asks for what is missing, /skift:tasks cuts it into tasks under kanban/tasks/ (one workstream each,
 citing the spec sections it covers), and /skift:kanban writes a task's tickets under kanban/tickets/, each
 with acceptance criteria. This script indexes the spec, shows its sections, checks the spec's shape, checks
 that the tasks and tickets drop nothing and contradict nothing, records each section's hash, and prints the
@@ -28,7 +28,8 @@ AC_RE = re.compile(r"^-\s*AC-(\d+)\s*(?:\(([a-z]+)\))?\s*:\s*(.+)$")
 CITE_RE = re.compile(r"\[([^\]]+)\]")
 DEFER_RE = re.compile(r"^-\s*`?([^\s`]+)`?\s*(?:—|–|--|-)\s*(\S.*)$")
 COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
-SPEC_HEADS = ("Purpose", "Parts in build order", "Systems", "Built with", "Out of scope")  # skift's own spec shape
+PARTS_HEAD = r"Parts,?\s+in build order"  # the grill writes "Parts, in build order"; the comma is optional
+SPEC_HEADS = ("Purpose", "Done looks like", PARTS_HEAD, "Systems", "Out of scope")  # Built with is optional: left out, Claude chooses
 VAGUE = ("fast", "quick", "easy", "simple", "user-friendly", "intuitive", "robust", "scalable", "flexible",
          "seamless", "modern", "clean", "efficient", "as needed", "and/or", "etc.", "tbd", "if needed")
 SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|secret|token|password|passwd|bearer)\b\s*[:=]\s*\S")
@@ -140,7 +141,7 @@ def units(rows: dict) -> list[str]:
     return [i for i, r in rows.items() if r["own"]]
 
 def spec_path(root: Path) -> str:
-    """The spec: from kanban/source.json once /skift:spec is done, else from the index's first line."""
+    """The spec: from kanban/source.json once /skift:grill is done, else from the index's first line."""
     if (root / SOURCE).is_file(): return json.loads((root / SOURCE).read_text(encoding="utf-8"))["spec"]
     if (root / INDEX).is_file() and (m := re.match(r"# Spec index of (.+)", (root / INDEX).read_text(encoding="utf-8"))): return m[1].strip()
     raise ValueError(f"no spec yet: run --index <your spec> first")
@@ -195,7 +196,7 @@ def spec_chars(root: Path, spec: str) -> int:
     return sum(len(p.read_text(encoding="utf-8", errors="replace")) for p in spec_files(root, spec))
 
 def build_index(root: Path, spec: str) -> int:
-    """--index: write kanban/index.md, and say whether /skift:spec reads the spec whole or works from the index."""
+    """--index: write kanban/index.md, and say whether the spec is read the spec whole or works from the index."""
     rows, files, chars = index(root, spec), spec_files(root, spec), spec_chars(root, spec)
     write_index(root, spec, rows)
     print(f"[skift] {plural(len(rows), 'section')}, {len(units(rows))} with text, from {plural(len(files), 'file')}, {chars} characters: {INDEX}")
@@ -233,9 +234,10 @@ def front(text: str) -> tuple[dict, str]:
                            if v.startswith("[") and v.endswith("]") else v.strip("`\"'"))
     return data, text[m.end():]
 
-def part_of(body: str, name: str) -> str:
-    """The text under `## <name>`, up to the next heading of the same level or higher, so its `###` parts stay."""
-    m = re.search(rf"^##\s+{re.escape(name)}\s*$\n(.*?)(?=^#{{1,2}}\s|\Z)", body, re.S | re.M | re.I)
+def part_of(body: str, name: str, is_re: bool = False) -> str:
+    """The text under `## <name>`, up to the next heading of the same level or higher, so its `###` parts stay.
+    With is_re, `name` is a pattern: the spec's own headings are matched loosely."""
+    m = re.search(rf"^##\s+{name if is_re else re.escape(name)}\s*$\n(.*?)(?=^#{{1,2}}\s|\Z)", body, re.S | re.M | re.I)
     return m[1].strip() if m else ""
 
 def title_of(body: str, fallback: str, lead: str = "") -> str:
@@ -323,7 +325,7 @@ def coverage(root: Path) -> list[str]:
     by_n = {t["n"]: t for t in ts}
     for t in ts:
         for sid in t["spec_refs"]:
-            if rows and sid not in rows: out.append(f"{t['path']}: section {sid} is not in the spec (rerun /skift:spec after a spec edit)")
+            if rows and sid not in rows: out.append(f"{t['path']}: section {sid} is not in the spec (rerun /skift:grill after a spec edit)")
         for n in t["after"]:
             if n not in by_n: out.append(f"{t['path']}: after {n} is not a task")
     for d in df:
@@ -380,27 +382,35 @@ def new_sections(root: Path, rows: dict) -> list[str]:
 # The reports: the spec's shape, the coverage, and the board.
 
 def check_spec(root: Path, spec: str) -> int:
-    """--check-spec: the fixed checks on the spec, the ones that are the same every run. Whether the spec says
-    enough to build from is judged by /skift:spec, not here."""
+    """--check-spec: the fixed checks on the spec, the ones that come out the same every run: is there anything
+    to build from, does a spec in the six-section shape carry every section and a bullet under every part, and
+    does it hold vague words or a secret. Whether it says enough to build from is /skift:grill's call."""
     files = spec_files(root, spec)
     text = COMMENT_RE.sub("", "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in files)).strip()
     out = []
-    said = [line.strip() for line in text.splitlines()
-            if line.strip() and not line.strip().startswith("#") and not re.fullmatch(r"[-*]?\s*<[^>]*>", line.strip())]
+    blank = re.sub(r"<[^<>]*>", "", text, flags=re.S)  # a <placeholder>, even one wrapped over lines, says nothing
+    said = [line.strip() for line in blank.splitlines()
+            if line.strip() and not line.strip().startswith("#") and not re.fullmatch(r"[-*:]+", line.strip())]
     if not said:
-        print(f"[skift] spec check: {spec} says nothing to build from: it needs a grill")
+        print(f"[skift] spec check: {spec} says nothing to build from: /skift:grill writes it")
         return 1
     bodies = {p: COMMENT_RE.sub("", p.read_text(encoding="utf-8", errors="replace")) for p in files}
-    shaped = [p for p, b in bodies.items() if re.search(r"^##\s+Parts in build order\s*$", b, re.M | re.I)]
-    for p in shaped:  # skift's own shape: the grill writes it, so it must hold up
+    filled = {p: re.sub(r"<[^<>]*>", "", b, flags=re.S) for p, b in bodies.items()}  # a section of placeholders is empty
+    shaped = [p for p, b in bodies.items() if re.search(rf"^##\s+{PARTS_HEAD}\s*$", b, re.M | re.I)]
+    for p in shaped:  # the six-section shape: whoever wrote it, the user or a grill, it must hold up
         rel = os.path.relpath(p, root)
         for head in SPEC_HEADS:
-            if not part_of(bodies[p], head): out.append(f"{rel}: ## {head} is missing or empty")
-        parts = re.split(r"^###\s+(.+?)\s*$", part_of(bodies[p], "Parts in build order"), flags=re.M)[1:]
-        if not parts: out.append(f"{rel}: Parts in build order holds no part: each is `### <what must work>`")
+            if not re.search(r"[A-Za-z0-9]", part_of(filled[p], head, is_re=head is PARTS_HEAD)):
+                out.append(f"{rel}: ## {'Parts, in build order' if head is PARTS_HEAD else head} is missing or empty")
+        body_parts = part_of(filled[p], PARTS_HEAD, is_re=True)
+        parts = re.split(r"^###\s+(.+?)\s*$", body_parts, flags=re.M)[1:] if re.search(r"[A-Za-z0-9]", body_parts) else []
+        if re.search(r"[A-Za-z0-9]", body_parts) and not parts:
+            out.append(f"{rel}: Parts, in build order holds no part: each is `### <the part>`")
         for name, body in zip(parts[::2], parts[1::2]):
-            if not re.search(r"^\s*Done:\s*$", body, re.M) or not re.search(r"^\s*-\s+\S", body, re.M):
-                out.append(f"{rel}: part {name}: no `Done:` line with at least one check under it")
+            if not (name := name.strip(" -:*")):
+                out.append(f"{rel}: a part has no name: each one is `### <what the user can do>`")
+            elif not re.search(r"^\s*[-*]\s+.*[A-Za-z0-9]", body, re.M):
+                out.append(f"{rel}: part {name}: no bullet under it; each bullet is one thing a person does and sees")
     for p, body in bodies.items():
         rel = os.path.relpath(p, root)
         for n, line in enumerate(body.splitlines(), 1):
@@ -410,7 +420,7 @@ def check_spec(root: Path, spec: str) -> int:
                     out.append(f"{rel}:{n}: \"{word}\" says nothing checkable: give what a person does and sees")
             if SECRET_RE.search(line): out.append(f"{rel}:{n}: this looks like a secret: put it in .env and name the key here")
     for line in out: print(f"[skift] {line}")
-    shape = "in skift's shape" if shaped else "in its own shape, as it was brought"
+    shape = "in the six-section shape" if shaped else "in its own shape, as it was brought"
     print(f"[skift] spec check: {plural(len(out), 'problem')} in {spec}" if out else
           f"[skift] spec check: no fixed check failed; {spec} is {shape}. Whether it says enough is the trial run's call")
     return 1 if out else 0
@@ -435,7 +445,7 @@ def status(root: Path) -> int:
     """--status: every task in build order with its tickets and their status, what the spec changed under, and
     the tasks with no tickets yet."""
     for old in LEGACY:
-        if (root / old).exists(): print(f"[skift] {old} is from skift before 1.0: rerun /skift:spec, then /skift:tasks")
+        if (root / old).exists(): print(f"[skift] {old} is from skift before 1.0: rerun /skift:grill, then /skift:tasks")
     spec, rows = spec_rows(root)
     ts, tk = tasks(root), tickets(root)
     marks = drift(root, rows) if rows and (root / SOURCE).is_file() else {}
@@ -456,17 +466,17 @@ def status(root: Path) -> int:
     if df := deferred(root): print(f"[skift] deferred: {plural(len(df), 'section')} no task covers")
     for i in (new_sections(root, rows) if rows and (root / SOURCE).is_file() else []):
         print(f"[skift] new in the spec, in no task: {i} ({rows[i]['title']})")
-    if marks: print(f"[skift] the spec changed: rerun /skift:spec, then /skift:kanban for each task marked above")
+    if marks: print(f"[skift] the spec changed: rerun /skift:grill, then /skift:kanban for each task marked above")
     return 0
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--project-dir", default=".", help="the project repo (default: cwd)")
     p.add_argument("--status", action="store_true", help="the board: every task, its tickets and their status")
-    p.add_argument("--index", metavar="SPEC", help="for /skift:spec: index the spec (a .md file or a folder) into kanban/index.md")
-    p.add_argument("--show", metavar="ID", nargs="+", help="for /skift:spec: print these sections of the spec, with line numbers")
-    p.add_argument("--grep", metavar="REGEX", help="for /skift:spec: the sections whose heading or text matches")
-    p.add_argument("--check-spec", metavar="SPEC", help="for /skift:spec: the fixed checks on the spec's shape and wording")
+    p.add_argument("--index", metavar="SPEC", help="for /skift:grill: index the spec (a .md file or a folder) into kanban/index.md")
+    p.add_argument("--show", metavar="ID", nargs="+", help="for /skift:grill: print these sections of the spec, with line numbers")
+    p.add_argument("--grep", metavar="REGEX", help="for /skift:grill: the sections whose heading or text matches")
+    p.add_argument("--check-spec", metavar="SPEC", help="for /skift:grill: the fixed checks on the spec's shape and wording")
     p.add_argument("--coverage", action="store_true", help="for /skift:tasks and /skift:kanban: check the tasks and tickets against the spec")
     p.add_argument("--record", action="store_true", help="for /skift:kanban: --coverage, then record each section's hash and print the board")
     a = p.parse_args()

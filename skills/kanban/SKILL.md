@@ -19,7 +19,7 @@ and a green `L --record`. You write requirements here, never code: what must hol
 1. Run `L --status`. Read the task file, kanban/context.md, CLAUDE.md, the tickets of the tasks it
    comes after, and the repo as far as the task touches it. Read every section the task cites, with
    `L --show <id> ...`, and enough of the rest of the spec to know what the tickets after this one
-   will need. A task marked `(spec changed)`: rerun `/skift:spec` first and say so.
+   will need. A task marked `(spec changed)`: rerun `/skift:grill` first and say so.
 2. Settle what the tickets rest on, evidence first: the repo and the spec answer most of it. Ask the
    user only where a wrong guess would cost rework beyond one ticket and the answer turns on
    something only they know: what the user of this task sees, which of two behaviours is meant,
