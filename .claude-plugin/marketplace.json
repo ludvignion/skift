@@ -4,20 +4,21 @@
     "name": "ludvignion"
   },
   "metadata": {
-    "description": "skift: your spec becomes kanban features; you tell Claude which to build.",
-    "version": "0.8.0"
+    "description": "skift: your spec becomes tasks and tickets with acceptance criteria; you tell Claude what to build.",
+    "version": "1.0.0"
   },
   "plugins": [
     {
       "name": "skift",
       "source": "./",
-      "description": "Spec to kanban features, missing context asked once. Building stays in your session.",
-      "version": "0.8.0",
+      "description": "Spec to tasks to tickets with acceptance criteria. Building stays in your session.",
+      "version": "1.0.0",
       "category": "workflow",
       "keywords": [
         "spec",
-        "features",
-        "kanban"
+        "requirements",
+        "kanban",
+        "tickets"
       ]
     }
   ]

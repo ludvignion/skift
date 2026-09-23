@@ -1,7 +1,7 @@
 {
   "name": "skift",
-  "version": "0.8.0",
-  "description": "Turn a spec in any Markdown into kanban features, asking only for missing context. It builds nothing: you tell Claude what to build, one feature, one slice or all of them.",
+  "version": "1.0.0",
+  "description": "Spec in, kanban out: check a spec of any size against what skift needs, grill in what is missing, cut it into tasks, and write each task's tickets with acceptance criteria. It builds nothing.",
   "author": {
     "name": "ludvignion"
   },
@@ -10,6 +10,8 @@
   "skills": [
     "./skills/init",
     "./skills/spec",
+    "./skills/tasks",
+    "./skills/kanban",
     "./skills/status"
   ]
 }

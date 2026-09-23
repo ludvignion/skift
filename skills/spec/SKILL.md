@@ -1,115 +1,79 @@
 ---
 name: spec
-description: Turn a spec of any size, in any Markdown (one file or a folder), into kanban/map.md and kanban features under kanban/features/, asking only for the context that is missing. A large spec is indexed, never read whole, and detailed one slice at a time.
+description: Check a spec of any size, in any Markdown (one file or a folder), against what skift needs to build from, have a grill write whatever is missing, index it, and record the systems and answers in kanban/context.md. It writes no tasks and no tickets; /skift:tasks does that next.
 disable-model-invocation: true
-argument-hint: "[spec .md file or folder, default spec/spec.md] [--next [N]]"
+argument-hint: "[spec .md file or folder, default spec/spec.md]"
 ---
 
 # Spec
 
-Arguments: `$ARGUMENTS`. The spec is the path given, or spec/spec.md. With `--next [N]` (N is 1 when
-left out), the spec is the one kanban/source.json names, and only the next N slices without features
-get them. The user wrote the spec in any shape and any size. You turn it into features and stop:
-nothing is built here. Later the user tells Claude what to build, one feature, one slice or all of
-them, and Claude builds each by the `## Kanban` section of CLAUDE.md, reading the spec (a large one
-through the index) and kanban/context.md, and decides how: what you write says what must work and
-what is fixed, never how.
+Arguments: `$ARGUMENTS`. The spec is the path given, or spec/spec.md. The user never writes the spec:
+they bring what they have, from nothing or a one-line idea to a client document of any size, and you
+have the grill write what is missing. This skill stops at a spec that holds enough to build from;
+`/skift:tasks` cuts it into tasks and `/skift:kanban` writes a task's tickets.
 
 `L` below stands for `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/kanban.py" --project-dir "$PWD"`.
 
 ## Steps
 
-1. Run `L --index <spec>`. If the spec is missing or says nothing to build, print the comment block
-   of ${CLAUDE_PLUGIN_ROOT}/templates/project/spec/spec.md, then end with this line, alone:
-   `Next: write what you want in <spec>, then /skift:spec <spec>`
-   The index says whether the spec is small or large:
-   - small: read the spec whole. Every slice gets its features now.
+1. Read `${CLAUDE_PLUGIN_ROOT}/templates/spec-standard.md`: S1-S6 and the rules for every statement
+   are what you check against, and the shape the grill writes in.
+2. If the spec exists and holds text, run `L --index <spec>`. It says whether the spec is small or
+   large:
+   - small: read the spec whole.
    - large: never read it whole. Read kanban/index.md, open sections with `L --show <id> ...`, find
-     them with `L --grep <regex>`. Only the first slice without features gets them now; with
-     `--next N`, the next N.
-2. Read what exists: kanban/context.md, kanban/map.md, kanban/features/, CLAUDE.md, progress.md, and
+     them with `L --grep <regex>`.
+3. Read what exists: kanban/context.md, kanban/tasks/, kanban/tickets/, CLAUDE.md, progress.md, and
    the repo as far as the spec touches it: README, dependency manifests, configuration, schemas and
-   migrations, the code the spec will change. When features exist, run `L --status`: it marks the
-   features the spec changed under and lists sections new in the spec. Never open .env or print a
-   secret; list only the keys it has: `grep -o '^[A-Za-z_][A-Za-z0-9_]*=' .env`.
-3. Find the missing context: what Claude needs to build and check the slices you detail now, that
-   neither the spec nor the repo gives. On a first run, also what the whole map depends on. Ask
-   only when a wrong guess would cost rework across features or touch something the user owns:
-   - access to systems: which database, API or environment, how to reach it, which data is safe to
-     read or write, and what must never change there;
-   - secrets: never ask for their values; ask the user to put them in .env under the keys you name,
-     and check that .env is in .gitignore;
-   - what done looks like, where the spec leaves it open across features;
-   - the stack, only when neither the spec nor the repo decides it and the user may care;
-   - contradictions in the spec: quote both sections by id and recommend one.
-   Everything else is decided when a feature is built. Record as an assumption only what the features
-   must agree on about what a user sees or a system shows, such as an address, a file format or a
-   default; never how to build it (data model, algorithm, what a model does and what code does,
-   libraries, file layout) unless the spec or the user says so.
-4. Ask in numbered rounds of related questions, costliest to get wrong first, each with a
-   recommended answer. Valid replies: an answer, "all recommended", "decide it" (the recommended
-   answer becomes an assumption), or "enough" (stop asking; the recommended answer of every
-   question still open becomes an assumption). Print only the questions.
-5. Write kanban/context.md with three sections, keeping what is already there:
+   migrations, the code the spec will change. When tasks exist, run `L --status`. Never open .env or
+   print a secret; list only the keys it has: `grep -o '^[A-Za-z_][A-Za-z0-9_]*=' .env`.
+4. Check the spec, in two layers.
+   - Run `L --check-spec <spec>`: the checks that come out the same every run. It refuses a spec
+     with nothing to build from, and for a spec in skift's shape it checks that each heading is
+     there and that each part carries a `Done:` check. It also lists vague words and anything that
+     looks like a secret, with their lines.
+   - Then the trial run, which you do in your head and write nothing for: draft the tasks the spec
+     would cut into, and for each task the acceptance criteria its tickets would carry. Every place
+     you would have to guess, where the guess would change what gets built or how it is checked, is
+     a gap: write down the spec line or section id, the guess, and the item it breaks (S1-S6 or a
+     rule). What the repo already settles is not a gap.
+5. Print the verdict, and nothing else about it:
+
+       Spec check: grill needed (3 gaps)
+       - S2 parts/orders: "manage orders" — create and cancel, or edit and refund too?
+       - S3 parts/reports: no check — which columns, and what a correct total looks like
+       - vague: spec.md:14 "fast"
+
+   With no gaps, print `Spec check: clean` and go to step 7.
+6. Have the missing parts written. The user never fills them in themselves.
+   - Invoke the `grill` skill on the spec, and give it the standard, the gaps above, and what the
+     repo already settles, so it does not ask about that.
+   - Without a grill skill, do it yourself: ask in numbered rounds of related questions, costliest
+     to get wrong first, at most 5 a round. Give a recommended answer only where the spec, the repo
+     or common practice makes one clearly better; where the choice is the user's alone, give the
+     options and recommend none. Valid replies: an answer, "all recommended" (each question that has
+     one takes it), or "decide it" (you decide, and it becomes an assumption in step 8).
+   - Where it lands: in the spec itself when skift wrote it, or when it is small enough to rewrite
+     whole. A document the user brought is never rewritten: write what is missing beside it as
+     `spec/<name>-additions.md`, citing the sections it completes, and from then on the spec is the
+     folder that holds both.
+   - Then run `L --index <spec>` and `L --check-spec <spec>` again and redo the trial run, until the
+     verdict is clean. Never grill twice in one run: if gaps are left after one pass, print them and
+     stop.
+7. Ask what the spec cannot hold, in rounds as in step 6: how to reach each system it names, which
+   data is safe to read or write, and which `.env` keys hold its secrets. Never ask for a secret's
+   value; ask the user to put it in .env under the keys you name, and check that .env is in
+   .gitignore.
+8. Write kanban/context.md, keeping what is already there:
    - `## Systems`: each system the work touches, how to reach it, the .env keys it needs (never
      their values), and what must never change there;
    - `## Answers`: each answer as `- YYYY-MM-DD Q: <question as asked> A: <answer as given>`; for
      "all recommended", A is the recommended answer followed by ` (recommended)`. Answers bind every
-     feature built;
+     ticket built;
    - `## Assumptions`: each thing you decided, as `- YYYY-MM-DD <assumption>`. Assumptions are
-     defaults: whoever builds a feature takes a better way where they see one, and records why.
-6. Write kanban/map.md: every slice of the whole spec, in build order, and what is not built.
-
-       # Map
-
-       ## Slices
-       - 01-<slice>: <what a user can do, or a system shows, once it is built> [src: <section id>, ...]
-
-       ## Context
-       - <what these sections hold, such as purpose, users or systems> [src: <section id>, ...]
-
-       ## Out of scope
-       - <what, and why> [src: <section id>, ...]
-
-   - Section ids are the ones in kanban/index.md. Citing a section covers everything under it.
-   - Every section with text of its own (own above 0 in the index) lies inside some line's
-     [src: ...]: a slice's, Context's, or Out of scope's. Nothing is dropped silently.
-   - A slice is a part a person can review as a whole: together its features give an outcome a
-     user can use or a system can show. 01 is the thinnest path end to end; every later slice
-     builds on what came before. A slice is named NN-<slice>, NN its place in the build order and
-     <slice> a short name in a-z, 0-9 and `-`.
-   - On a rerun keep the slices and their numbers, and add slices for new sections. Renumber only
-     when the order changes, and rename the slice files with it.
-7. Write the features of the slices detailed now. Each is a file `kanban/features/NN-<slice>.json`,
-   named as in the map, holding a JSON array of features:
-
-       {"id": 1, "description": "<one sentence: what a user can do, or a system shows, once it is built>", "steps": ["..."], "source": ["<section id>", "..."], "passes": false}
-
-   - source: the most specific sections the feature comes from, each inside its slice's [src: ...];
-     a feature citing a whole chapter is flagged by every edit in it. Together, the features of a
-     slice cite every section with text in the slice that Context and Out of scope do not hold.
-   - A feature is one sitting's work: one statement of the spec. An answer or assumption that
-     refines a statement becomes steps of its feature, never a feature of its own. Setup goes into
-     the first feature that needs it, never a feature of its own.
-   - steps: what a person does and sees, or what a system shows, each checkable; at most 8. They are
-     also the checklist the user reviews the feature by.
-   - Nothing the spec does not ask for. How a feature gets built is decided when it is built.
-   - ids count up across every file, from one past the highest id kanban/features/ holds now or has
-     ever held: `git log -p -- kanban/features | grep -o '"id": [0-9]*' | grep -o '[0-9]*$' | sort -n | tail -1`.
-   - When features already exist, on every run, `--next` included: keep every feature whose
-     sections did not change. Rewrite the ones `L --status` marks `(spec changed)` from their
-     sections as they are now. For one marked `(spec changed since it passed)`: if the change alters
-     what it does, set `"passes": false` and say so in the summary; if not, leave it. Remove
-     features whose sections are gone. Never reuse an id.
-8. Run `L --mark-spec <spec>`. It indexes the spec again, checks the map and the features against it
-   (every section covered, every cited section exists and lies inside its slice), records each
-   section's hash in kanban/source.json, creates progress.md, and prints the status. Fix every
-   problem it lists and run it again, until it prints the status.
-9. Commit: `git add kanban progress.md <spec> && git commit -m "skift: spec"`.
-10. End with a summary in plain words about the product, never about files or code:
-    - each slice detailed now, in build order: one line on what a user can do once it is built, and
-      its number of features;
-    - the slices not detailed yet, one line each;
-    - the assumptions you made, and the questions still open if the user said "enough";
-    - then this line, alone, with the first open feature's id and the last slice detailed now:
-      `Next: review kanban/, then tell Claude what to build: "build feature <id>", or "build every open feature up to <slice>"`
+     defaults: whoever builds a ticket takes a better way where they see one, and records why.
+9. Commit: `git add kanban <spec> && git commit -m "skift: spec"`.
+10. End with, in plain words about the product and never about files or code: what it is for and who
+    uses it, in one line; the parts the spec now holds, one line each; the assumptions you made;
+    then this line, alone:
+    `Next: /skift:tasks`

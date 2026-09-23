@@ -1,6 +1,6 @@
 ---
 name: status
-description: Show the skift kanban board, starting nothing - every feature under its slice in build order, passing or open, with its gaps, findings and deviations, the slices not detailed yet, and the features the spec changed under. Use before building a kanban feature, or when asked what is built or left.
+description: Show the skift board, starting nothing - every task in build order with its tickets and their status (ready, in progress, in review, done), the tasks with no tickets yet, the deferred sections, and what the spec changed under. Use before building a ticket, or when asked what is built and what is left.
 ---
 
 # Status

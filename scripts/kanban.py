@@ -1,24 +1,37 @@
 #!/usr/bin/env python3
-"""skift kanban. /skift:spec turns a spec of any size into kanban/map.md (every slice in build order, with
-the spec sections it covers) and kanban/features/NN-<slice>.json (the features of the slices detailed so
-far, each citing its sections); this script indexes the spec, shows its sections, checks that the map and
-the features drop nothing, records each section's hash, and prints the board: every feature under its
-slice, passing or open, and the features a spec edit changed under. It builds nothing: you tell Claude
-what to build, in your own session."""
+"""skift kanban. skift turns a spec into requirements and stops: /skift:spec indexes the spec and has it
+grilled where it is too thin, /skift:tasks cuts it into tasks under kanban/tasks/ (one workstream each,
+citing the spec sections it covers), and /skift:kanban writes a task's tickets under kanban/tickets/, each
+with acceptance criteria. This script indexes the spec, shows its sections, checks the spec's shape, checks
+that the tasks and tickets drop nothing and contradict nothing, records each section's hash, and prints the
+board. It builds nothing: you tell Claude what to build, in your own session."""
 import argparse, hashlib, json, os, re, sys, unicodedata  # noqa: E401
 from pathlib import Path
 
-SMALL_SPEC_CHARS = 60000  # up to this, the spec is read whole and every slice is detailed at once
+SMALL_SPEC_CHARS = 60000  # up to this, the spec is read whole and every task is written at once
 CHUNK_LINES = 80  # own text longer than this is cited in parts, <id>~1, <id>~2, ...
 
-FEATURES, MAP, INDEX, SOURCE = "kanban/features", "kanban/map.md", "kanban/index.md", "kanban/source.json"
-PROGRESS, LEGACY = "progress.md", "features.json"  # LEGACY: the feature file before 0.4
+TASKS, TICKETS, DEFERRED = "kanban/tasks", "kanban/tickets", "kanban/deferred.md"
+INDEX, SOURCE, PROGRESS = "kanban/index.md", "kanban/source.json", "progress.md"
+LEGACY = ("features.json", "kanban/features", "kanban/map.md")  # skift before 1.0
 SECTIONS = ("Current", "Log", "Decided", "Deviations", "Gaps", "Findings")  # of progress.md
-FILE_RE, NOTE_RE = re.compile(r"^(\d+)-[a-z0-9]+(?:-[a-z0-9]+)*$"), re.compile(r"\bfeature #?(\d+)\b", re.I)
+STATUSES = ("ready", "in_progress", "in_review", "done")  # of a ticket; only a person sets done
+AC_TAGS = ("behavioral", "property", "critical", "human")  # human: no test names it, a person confirms it
+NOTE_RE = re.compile(r"\bticket #?(\d+\.\d+)\b", re.I)
 HEADING_RE, FENCE_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$"), re.compile(r"^\s*(```|~~~)")
 EXPLICIT_ID = re.compile(r"\b(?:REQ|FR|NFR|US|UC|BR)-\d{1,6}\b")  # requirement ids a heading may carry
 TRANSLIT = str.maketrans({"ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "ß": "ss", "ł": "l", "Ł": "L", "đ": "d", "Đ": "D", "ð": "d", "þ": "th"})
-SLICE_LINE_RE, SRC_RE = re.compile(r"^- (\d+-[a-z0-9]+(?:-[a-z0-9]+)*):\s*(.*?)\s*\[src:"), re.compile(r"\[src:\s*([^\]]*)\]\s*$")
+FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.S)
+TASK_RE = re.compile(r"^(\d+)-([a-z0-9]+(?:-[a-z0-9]+)*)$")
+TICKET_RE = re.compile(r"^(\d+)\.(\d+)-([a-z0-9]+(?:-[a-z0-9]+)*)$")
+AC_RE = re.compile(r"^-\s*AC-(\d+)\s*(?:\(([a-z]+)\))?\s*:\s*(.+)$")
+CITE_RE = re.compile(r"\[([^\]]+)\]")
+DEFER_RE = re.compile(r"^-\s*`?([^\s`]+)`?\s*(?:—|–|--|-)\s*(\S.*)$")
+COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+SPEC_HEADS = ("Purpose", "Parts in build order", "Systems", "Built with", "Out of scope")  # skift's own spec shape
+VAGUE = ("fast", "quick", "easy", "simple", "user-friendly", "intuitive", "robust", "scalable", "flexible",
+         "seamless", "modern", "clean", "efficient", "as needed", "and/or", "etc.", "tbd", "if needed")
+SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|secret|token|password|passwd|bearer)\b\s*[:=]\s*\S")
 
 
 # The spec index: sections by id, read straight from the spec each time, so line numbers never go stale.
@@ -123,7 +136,7 @@ def under(sid: str | None, anc: str, parents: dict) -> bool:
     return False
 
 def units(rows: dict) -> list[str]:
-    """The sections with text of their own: what the map and the features must cover."""
+    """The sections with text of their own: what the tasks and the deferred list must cover."""
     return [i for i, r in rows.items() if r["own"]]
 
 def spec_path(root: Path) -> str:
@@ -133,101 +146,19 @@ def spec_path(root: Path) -> str:
     raise ValueError(f"no spec yet: run --index <your spec> first")
 
 
-# The map and the features.
-
-def read_map(root: Path) -> dict | None:
-    """kanban/map.md: the slices in build order (name, what, source), and the sections under ## Context and
-    ## Out of scope. Each line ends in [src: <section id>, ...]."""
-    if not (root / MAP).is_file(): return None
-    mp, part = {"slices": [], "context": [], "out": []}, None
-    for line in (root / MAP).read_text(encoding="utf-8").splitlines():
-        if h := re.match(r"^##\s+(.+?)\s*$", line):
-            part = {"slices": "slices", "context": "context", "out of scope": "out"}.get(h[1].lower())
-        elif part and (s := SRC_RE.search(line)):
-            ids = [x.strip() for x in s[1].split(",") if x.strip()]
-            if part != "slices": mp[part] += ids
-            elif m := SLICE_LINE_RE.match(line.strip()): mp["slices"].append({"name": m[1], "what": m[2], "source": ids})
-    mp["slices"].sort(key=lambda s: (int(s["name"].split("-")[0]), s["name"]))
-    return mp
-
-def slices(root: Path) -> list[Path]:
-    """The slice files in build order: kanban/features/NN-<slice>.json, by their number."""
-    files = list((root / FEATURES).glob("*.json"))
-    for p in files:
-        if not FILE_RE.match(p.stem):
-            raise ValueError(f"{FEATURES}/{p.name}: a slice file is named NN-<slice>.json, its number the build order; rerun /skift:spec")
-    return sorted(files, key=lambda p: (int(p.stem.split("-")[0]), p.stem))
-
-def load(root: Path) -> list[dict]:
-    """Every feature in build order, its slice under "_slice"; refuses a malformed feature or an id used twice."""
-    feats, seen = [], set()
-    for p in slices(root):
-        try:
-            items = json.loads(p.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            raise ValueError(f"{FEATURES}/{p.name} is not valid JSON: {e}") from e
-        for f in items if isinstance(items, list) else [None]:
-            if not (isinstance(f, dict) and isinstance(f.get("id"), int) and isinstance(f.get("description"), str)
-                    and isinstance(f.get("steps"), list) and isinstance(f.get("passes"), bool)):
-                raise ValueError(f"{FEATURES}/{p.name}: a slice file is a list of features, each with an int id, a description, a list of steps and passes")
-            if f["id"] in seen: raise ValueError(f"{FEATURES}/{p.name}: feature id {f['id']} is used twice")
-            seen.add(f["id"])
-            feats.append({**f, "_slice": p.stem})
-    return feats
-
-def check(rows: dict, mp: dict, feats: list[dict], detailed: set) -> list[str]:
-    """Why the map and the features do not fit the spec: sections that do not exist, features citing outside
-    their slice, and sections with text that no slice, no feature of a detailed slice, Context or Out of scope covers."""
-    parents, problems = {i: r["parent"] for i, r in rows.items()}, []
-    names, numbers = [s["name"] for s in mp["slices"]], [s["name"].split("-")[0] for s in mp["slices"]]
-    problems += [f"{MAP}: slice number {n} is used twice" for n in sorted({n for n in numbers if numbers.count(n) > 1})]
-    for sid in dict.fromkeys([i for s in mp["slices"] for i in s["source"]] + mp["context"] + mp["out"]):
-        if sid not in rows: problems.append(f"{MAP}: section {sid} is not in the spec")
-    problems += [f"{FEATURES}/{s}.json: slice {s} is not in {MAP}" for s in sorted(detailed - set(names))]
-    by_name = {s["name"]: s for s in mp["slices"]}
-    for f in (f for f in feats if f["_slice"] in by_name):
-        src = f.get("source")
-        if not (isinstance(src, list) and src and all(isinstance(x, str) for x in src)):
-            problems.append(f"feature {f['id']}: needs \"source\", the list of spec sections it comes from")
-            continue
-        for sid in src:
-            if sid not in rows: problems.append(f"feature {f['id']}: section {sid} is not in the spec")
-            elif not any(under(sid, a, parents) for a in by_name[f["_slice"]]["source"]):
-                problems.append(f"feature {f['id']}: section {sid} lies outside its slice {f['_slice']}")
-    inside = lambda sid, ancestors: any(under(sid, a, parents) for a in ancestors)  # noqa: E731
-    for sid in units(rows):
-        if inside(sid, mp["context"] + mp["out"]): continue
-        homes = [s for s in mp["slices"] if inside(sid, s["source"])]
-        if not homes: problems.append(f"section {sid} ({rows[sid]['title']}) is in no slice of {MAP}, nor under Context or Out of scope")
-        for s in (s for s in homes if s["name"] in detailed):
-            if not inside(sid, [x for f in feats if f["_slice"] == s["name"] for x in f.get("source") or []]):
-                problems.append(f"slice {s['name']}: no feature cites section {sid} ({rows[sid]['title']})")
-    return problems
+# What the spec looked like when the tickets were written.
 
 def record(root: Path, spec: str, rows: dict) -> None:
-    """kanban/source.json: the spec, and each section's hash and parent, as the features were written."""
+    """kanban/source.json: the spec, and each section's hash and parent, as the tickets were written."""
     data = {"spec": spec, "sections": {i: r["hash"] for i, r in rows.items()}, "parents": {i: r["parent"] for i, r in rows.items()}}
     (root / SOURCE).write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
 
 def changes(root: Path, rows: dict) -> dict:
-    """What changed in the spec since /skift:spec: sections edited, added and removed, and the old parents."""
+    """What changed in the spec since the tickets were written: sections edited, added and removed, and the old parents."""
     src = json.loads((root / SOURCE).read_text(encoding="utf-8")) if (root / SOURCE).is_file() else {}
     old = src.get("sections", {})
     return {"edited": {i for i in rows if i in old and rows[i]["hash"] != old[i]}, "added": set(rows) - set(old) if old else set(),
             "removed": set(old) - set(rows), "old_parents": src.get("parents", {})}
-
-def affected(f: dict, ch: dict, rows: dict) -> list[str]:
-    """The edited, added or removed sections inside what feature f cites."""
-    new = {i: r["parent"] for i, r in rows.items()}
-    cites = f.get("source") or []
-    hit = [i for i in ch["edited"] | ch["added"] if any(under(i, a, new) for a in cites)]
-    return sorted(hit + [i for i in ch["removed"] if any(under(i, a, ch["old_parents"]) for a in cites)])
-
-def uncovered_new(rows: dict, mp: dict, ch: dict) -> list[str]:
-    """Sections with text added to the spec since /skift:spec that no slice, Context or Out of scope covers."""
-    parents = {i: r["parent"] for i, r in rows.items()}
-    held = [i for s in mp["slices"] for i in s["source"]] + mp["context"] + mp["out"]
-    return [i for i in units(rows) if i in ch["added"] and not any(under(i, a, parents) for a in held)]
 
 def section(root: Path, name: str) -> list[str]:
     """The items under `## <name>` in progress.md, one per bullet, its wrapped lines joined."""
@@ -239,14 +170,14 @@ def section(root: Path, name: str) -> list[str]:
             else: out.append(line.strip())
     return out
 
-def notes(root: Path, name: str) -> dict[int, list[str]]:
-    """The items under `## <name>` in progress.md by the feature they start with (`- feature N:`), else by every
-    feature they name, without that prefix."""
-    out: dict[int, list[str]] = {}
+def notes(root: Path, name: str) -> dict[str, list[str]]:
+    """The items under `## <name>` in progress.md by the ticket they start with (`- ticket N.M:`), else by every
+    ticket they name, without that prefix."""
+    out: dict[str, list[str]] = {}
     for line in section(root, name):
-        lead = re.match(r"^-\s*(\d{4}-\d{2}-\d{2}\s+)?feature #?(\d+)\s*:\s*", line, re.I)
+        lead = re.match(r"^-\s*(\d{4}-\d{2}-\d{2}\s+)?ticket #?(\d+\.\d+)\s*:\s*", line, re.I)
         text = line[lead.end():] if lead else line
-        for i in [lead[2]] if lead else NOTE_RE.findall(line): out.setdefault(int(i), []).append(text)
+        for i in [lead[2]] if lead else NOTE_RE.findall(line): out.setdefault(i, []).append(text)
     return out
 
 def ensure_progress(root: Path) -> None:
@@ -256,18 +187,6 @@ def ensure_progress(root: Path) -> None:
     have = {m.lower() for m in re.findall(r"^## +(.+?)\s*$", text, re.M)}
     missing = [f"## {s}\n" for s in SECTIONS if s.lower() not in have]
     if missing: path.write_text(text.rstrip("\n") + "\n\n" + "\n".join(missing), encoding="utf-8")
-
-def state(root: Path) -> dict:
-    """What --status looks at: the spec, its sections, the map, the features, which slices are detailed, what
-    changed in the spec, which features that touches, and new sections in no slice."""
-    if (root / LEGACY).is_file(): raise ValueError(f"{LEGACY} is from skift before 0.4: rerun /skift:spec <your spec>")
-    if not (root / SOURCE).is_file(): raise ValueError(f"{SOURCE} is missing: run /skift:spec <your spec>")
-    spec = spec_path(root)
-    if (mp := read_map(root)) is None: raise ValueError(f"{MAP} is missing: rerun /skift:spec {spec}")
-    rows, feats = index(root, spec), load(root)
-    ch = changes(root, rows)
-    return {"spec": spec, "rows": rows, "map": mp, "feats": feats, "detailed": {p.stem for p in slices(root)}, "changes": ch,
-            "affected": {f["id"]: affected(f, ch, rows) for f in feats}, "new": uncovered_new(rows, mp, ch)}
 
 def plural(n: int, word: str) -> str:
     return f"{n} {word}{'s' * (n != 1)}"
@@ -280,8 +199,8 @@ def build_index(root: Path, spec: str) -> int:
     rows, files, chars = index(root, spec), spec_files(root, spec), spec_chars(root, spec)
     write_index(root, spec, rows)
     print(f"[skift] {plural(len(rows), 'section')}, {len(units(rows))} with text, from {plural(len(files), 'file')}, {chars} characters: {INDEX}")
-    print("[skift] small: read the spec whole, and write the features of every slice now" if chars <= SMALL_SPEC_CHARS else
-          "[skift] large: work from the index, read sections with --show, and write the features of the first slice only")
+    print("[skift] small: read the spec whole" if chars <= SMALL_SPEC_CHARS else
+          "[skift] large: never read it whole; work from the index and read sections with --show")
     return 0
 
 def show(root: Path, ids: list[str]) -> int:
@@ -299,55 +218,262 @@ def grep(root: Path, pattern: str) -> int:
         if line is not None: print(f"- {r['id']} | {r['file']}:{r['start']}-{r['end']} | {r['title']} | {line[:160]}")
     return 0
 
-def mark(root: Path, spec: str) -> int:
-    """--mark-spec: index the spec, check the map and the features against it, and when they fit, record each
-    section's hash in kanban/source.json and print the status."""
-    rows = index(root, spec)
-    write_index(root, spec, rows)
-    if (mp := read_map(root)) is None: raise ValueError(f"{MAP} is missing: write it first")
-    problems = check(rows, mp, load(root), {p.stem for p in slices(root)})
-    ensure_progress(root)
-    for p in problems: print(f"[skift] problem: {p}")
-    if problems:
-        print(f"[skift] {plural(len(problems), 'problem')}: fix them, then run --mark-spec again")
+
+
+# The tasks, their tickets and the deferred sections.
+
+def front(text: str) -> tuple[dict, str]:
+    """A markdown file's frontmatter as {key: str or list of str}, and the body under it."""
+    if not (m := FM_RE.match(text)): return {}, text
+    data: dict = {}
+    for line in m[1].splitlines():
+        if kv := re.match(r"^([A-Za-z_][\w-]*):\s*(.*?)\s*(?:\s#.*)?$", line):
+            v = kv[2].strip()
+            data[kv[1]] = ([x.strip().strip("`\"'") for x in v[1:-1].split(",") if x.strip()]
+                           if v.startswith("[") and v.endswith("]") else v.strip("`\"'"))
+    return data, text[m.end():]
+
+def part_of(body: str, name: str) -> str:
+    """The text under `## <name>`, up to the next heading of the same level or higher, so its `###` parts stay."""
+    m = re.search(rf"^##\s+{re.escape(name)}\s*$\n(.*?)(?=^#{{1,2}}\s|\Z)", body, re.S | re.M | re.I)
+    return m[1].strip() if m else ""
+
+def title_of(body: str, fallback: str, lead: str = "") -> str:
+    """The `# ` heading of a task or ticket file, without the number it repeats."""
+    title = next((line[2:].strip() for line in body.splitlines() if line.startswith("# ")), fallback)
+    return re.sub(lead, "", title, count=1).strip() if lead else title
+
+def tasks(root: Path) -> list[dict]:
+    """kanban/tasks/<n>-<slug>.md in number order: n, name, path, title, outcome, spec_refs, after."""
+    out = []
+    for p in sorted((root / TASKS).glob("*.md")):
+        if not (m := TASK_RE.match(p.stem)):
+            raise ValueError(f"{TASKS}/{p.name}: a task file is named <n>-<slug>.md, such as 1-orders.md")
+        fm, body = front(p.read_text(encoding="utf-8"))
+        out.append({"n": int(m[1]), "name": p.stem, "path": f"{TASKS}/{p.name}", "title": title_of(body, p.stem, r"^Task\s+\d+\s*[:.]?\s*"),
+                    "outcome": " ".join(part_of(body, "Outcome").split()),
+                    "spec_refs": list(fm.get("spec_refs") or []),
+                    "after": [int(x) for x in fm.get("after") or [] if str(x).strip().isdigit()]})
+    numbers = [t["n"] for t in out]
+    if twice := sorted({n for n in numbers if numbers.count(n) > 1}):
+        raise ValueError(f"{TASKS}: task number {twice[0]} is used twice")
+    return sorted(out, key=lambda t: t["n"])
+
+def tickets(root: Path) -> list[dict]:
+    """kanban/tickets/<n>.<m>-<slug>.md: id, parent, status, depends_on, writes, title, acs and the sections
+    its acceptance criteria cite, in `[<section id>]` at the end of the line."""
+    out = []
+    for p in sorted((root / TICKETS).glob("*.md")):
+        if not (m := TICKET_RE.match(p.stem)):
+            raise ValueError(f"{TICKETS}/{p.name}: a ticket file is named <n>.<m>-<slug>.md, such as 1.2-place-an-order.md")
+        fm, body = front(p.read_text(encoding="utf-8"))
+        acs = [{"n": int(a[1]), "tag": (a[2] or ""), "text": a[3],
+                "cites": [x.strip() for c in CITE_RE.findall(a[3]) for x in c.split(",") if x.strip()]}
+               for line in part_of(body, "Acceptance criteria").splitlines() if (a := AC_RE.match(line.strip()))]
+        out.append({"id": f"{int(m[1])}.{int(m[2])}", "parent": int(m[1]), "m": int(m[2]), "path": f"{TICKETS}/{p.name}",
+                    "title": title_of(body, p.stem, r"^\d+\.\d+\s*[:.]?\s*"), "status": str(fm.get("status") or "ready").strip(),
+                    "depends_on": [str(x) for x in fm.get("depends_on") or []], "writes": list(fm.get("writes") or []),
+                    "acs": acs, "cites": sorted({c for a in acs for c in a["cites"]})})
+    ids = [t["id"] for t in out]
+    if twice := sorted({i for i in ids if ids.count(i) > 1}):
+        raise ValueError(f"{TICKETS}: ticket {twice[0]} is written twice")
+    return sorted(out, key=lambda t: (t["parent"], t["m"]))
+
+def deferred(root: Path) -> list[dict]:
+    """kanban/deferred.md: one `- <section id> — <reason>` line per section no task covers."""
+    out = []
+    for line in (root / DEFERRED).read_text(encoding="utf-8").splitlines() if (root / DEFERRED).is_file() else []:
+        if not line.strip().startswith("-"): continue
+        if d := DEFER_RE.match(line.strip()): out.append({"id": d[1], "reason": d[2]})
+        else: out.append({"id": line.strip().lstrip("-").strip().strip("`"), "reason": ""})
+    return out
+
+def a_cycle(edges: dict) -> list | None:
+    """One cycle in a graph of node -> nodes it waits for, as the nodes around it, or None."""
+    state, stack = {}, []
+    def walk(u):
+        state[u], _ = 1, stack.append(u)
+        for v in edges.get(u, []):
+            if state.get(v) == 1: return stack[stack.index(v):] + [v]
+            if not state.get(v) and (found := walk(v)): return found
+        state[u] = 2
+        stack.pop()
+        return None
+    for u in list(edges):
+        if not state.get(u) and (found := walk(u)): return found
+    return None
+
+def spec_rows(root: Path) -> tuple[str | None, dict]:
+    """The spec and its sections, or (None, {}) when the project has no spec: tasks may be written by hand."""
+    try:
+        spec = spec_path(root)
+    except ValueError:
+        return None, {}
+    return spec, index(root, spec)
+
+def coverage(root: Path) -> list[str]:
+    """Why the tasks and tickets do not fit the spec, as `<path>: <what is wrong>` lines: a section in no task
+    and not deferred, or in two; a cited section that is not in the spec; a deferred line without a reason; an
+    `after` or `depends_on` that does not exist or runs in a circle; a ticket without sound acceptance
+    criteria; and, once a task has tickets, a section of it no acceptance criterion cites."""
+    spec, rows = spec_rows(root)
+    ts, tk, df, out = tasks(root), tickets(root), deferred(root), []
+    parents = {i: r["parent"] for i, r in rows.items()}
+    covers = lambda sid, cited: [a for a in cited if under(sid, a, parents)]  # noqa: E731
+    by_n = {t["n"]: t for t in ts}
+    for t in ts:
+        for sid in t["spec_refs"]:
+            if rows and sid not in rows: out.append(f"{t['path']}: section {sid} is not in the spec (rerun /skift:spec after a spec edit)")
+        for n in t["after"]:
+            if n not in by_n: out.append(f"{t['path']}: after {n} is not a task")
+    for d in df:
+        if rows and d["id"] not in rows: out.append(f"{DEFERRED}: section {d['id']} is not in the spec")
+        if not d["reason"]: out.append(f"{DEFERRED}: {d['id']} is deferred without a reason: write `- {d['id']} — <why>`")
+    if found := a_cycle({t["n"]: t["after"] for t in ts}):
+        out.append(f"{TASKS}: after runs in a circle: {' after '.join(str(n) for n in found)}")
+    for sid in units(rows):
+        homes = [t for t in ts if covers(sid, t["spec_refs"])]
+        away = [d for d in df if covers(sid, [d["id"]])]
+        where = [t["name"] for t in homes] + [f"deferred ({d['id']})" for d in away]
+        if not where: out.append(f"{INDEX}: section {sid} ({rows[sid]['title']}) is in no task and not deferred")
+        elif len(where) > 1: out.append(f"{INDEX}: section {sid} ({rows[sid]['title']}) is in {' and '.join(where)}: it belongs in one")
+    for k in tk:
+        if k["parent"] not in by_n: out.append(f"{k['path']}: task {k['parent']} is not in {TASKS}")
+        if k["status"] not in STATUSES: out.append(f"{k['path']}: status {k['status']} is not one of {', '.join(STATUSES)}")
+        if not k["acs"]: out.append(f"{k['path']}: no acceptance criteria: each is `- AC-1 (behavioral): Given ..., When ..., Then ...`")
+        for a in k["acs"]:
+            if a["tag"] not in AC_TAGS:
+                out.append(f"{k['path']}: AC-{a['n']} is tagged {a['tag'] or '(nothing)'}: every criterion is {', '.join(AC_TAGS[:-1])} or human")
+            for sid in a["cites"]:
+                if rows and sid not in rows: out.append(f"{k['path']}: AC-{a['n']} cites {sid}, which is not in the spec")
+                elif k["parent"] in by_n and rows and not covers(sid, by_n[k["parent"]]["spec_refs"]):
+                    out.append(f"{k['path']}: AC-{a['n']} cites {sid}, which lies outside task {k['parent']}")
+        for dep in k["depends_on"]:
+            if dep not in {x["id"] for x in tk}: out.append(f"{k['path']}: depends_on {dep} is not a ticket")
+    if found := a_cycle({k["id"]: k["depends_on"] for k in tk}):
+        out.append(f"{TICKETS}: depends_on runs in a circle: {' needs '.join(found)}")
+    for t in ts:
+        mine = [k for k in tk if k["parent"] == t["n"]]
+        cited = [c for k in mine for c in k["cites"]]
+        for sid in (units(rows) if mine else []):
+            if covers(sid, t["spec_refs"]) and not covers(sid, cited):
+                out.append(f"{t['path']}: section {sid} ({rows[sid]['title']}) is in task {t['n']} but no acceptance criterion cites it")
+    return out
+
+def drift(root: Path, rows: dict) -> dict:
+    """Sections that changed since the tickets were written, by what cites them: {task number or ticket id: ids}."""
+    ch, marks = changes(root, rows), {}
+    parents, old = {i: r["parent"] for i, r in rows.items()}, ch["old_parents"]
+    for key, cites in [(t["n"], t["spec_refs"]) for t in tasks(root)] + [(k["id"], k["cites"]) for k in tickets(root)]:
+        hit = [i for i in ch["edited"] | ch["added"] if any(under(i, a, parents) for a in cites)]
+        hit += [i for i in ch["removed"] if any(under(i, a, old) for a in cites)]
+        if hit: marks[key] = sorted(hit)
+    return marks
+
+def new_sections(root: Path, rows: dict) -> list[str]:
+    """Sections with text that the spec gained since the tickets were written, in no task and not deferred."""
+    ch, parents = changes(root, rows), {i: r["parent"] for i, r in rows.items()}
+    held = [i for t in tasks(root) for i in t["spec_refs"]] + [d["id"] for d in deferred(root)]
+    return [i for i in units(rows) if i in ch["added"] and not any(under(i, a, parents) for a in held)]
+
+
+# The reports: the spec's shape, the coverage, and the board.
+
+def check_spec(root: Path, spec: str) -> int:
+    """--check-spec: the fixed checks on the spec, the ones that are the same every run. Whether the spec says
+    enough to build from is judged by /skift:spec, not here."""
+    files = spec_files(root, spec)
+    text = COMMENT_RE.sub("", "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in files)).strip()
+    out = []
+    said = [line.strip() for line in text.splitlines()
+            if line.strip() and not line.strip().startswith("#") and not re.fullmatch(r"[-*]?\s*<[^>]*>", line.strip())]
+    if not said:
+        print(f"[skift] spec check: {spec} says nothing to build from: it needs a grill")
         return 1
-    record(root, spec, rows)
-    return status(root)
+    bodies = {p: COMMENT_RE.sub("", p.read_text(encoding="utf-8", errors="replace")) for p in files}
+    shaped = [p for p, b in bodies.items() if re.search(r"^##\s+Parts in build order\s*$", b, re.M | re.I)]
+    for p in shaped:  # skift's own shape: the grill writes it, so it must hold up
+        rel = os.path.relpath(p, root)
+        for head in SPEC_HEADS:
+            if not part_of(bodies[p], head): out.append(f"{rel}: ## {head} is missing or empty")
+        parts = re.split(r"^###\s+(.+?)\s*$", part_of(bodies[p], "Parts in build order"), flags=re.M)[1:]
+        if not parts: out.append(f"{rel}: Parts in build order holds no part: each is `### <what must work>`")
+        for name, body in zip(parts[::2], parts[1::2]):
+            if not re.search(r"^\s*Done:\s*$", body, re.M) or not re.search(r"^\s*-\s+\S", body, re.M):
+                out.append(f"{rel}: part {name}: no `Done:` line with at least one check under it")
+    for p, body in bodies.items():
+        rel = os.path.relpath(p, root)
+        for n, line in enumerate(body.splitlines(), 1):
+            low = line.lower()
+            for word in VAGUE:
+                if re.search(rf"(?<![\w-]){re.escape(word)}(?:ly|er|est|ness)?(?![\w-])", low):
+                    out.append(f"{rel}:{n}: \"{word}\" says nothing checkable: give what a person does and sees")
+            if SECRET_RE.search(line): out.append(f"{rel}:{n}: this looks like a secret: put it in .env and name the key here")
+    for line in out: print(f"[skift] {line}")
+    shape = "in skift's shape" if shaped else "in its own shape, as it was brought"
+    print(f"[skift] spec check: {plural(len(out), 'problem')} in {spec}" if out else
+          f"[skift] spec check: no fixed check failed; {spec} is {shape}. Whether it says enough is the trial run's call")
+    return 1 if out else 0
+
+def check(root: Path, record_it: bool, spec: str | None = None) -> int:
+    """--coverage, and with --record the same checks before each section's hash goes into kanban/source.json."""
+    spec = spec or (spec_path(root) if (root / SOURCE).is_file() or (root / INDEX).is_file() else None)
+    rows = index(root, spec) if spec else {}
+    if spec: write_index(root, spec, rows)
+    problems = coverage(root)
+    for p in problems: print(f"[skift] {p}")
+    print(f"[skift] coverage: {plural(len(problems), 'problem')} over {plural(len(units(rows)), 'section')}, "
+          f"{plural(len(tasks(root)), 'task')}, {plural(len(tickets(root)), 'ticket')}")
+    if problems: return 1
+    if record_it:
+        if spec: record(root, spec, rows)
+        ensure_progress(root)
+        return status(root)
+    return 0
 
 def status(root: Path) -> int:
-    """--status: per slice, in build order: passing/total, gaps and findings, then each feature; slices not
-    detailed yet; and what changed in the spec."""
-    st = state(root)
-    feats, gaps, found, dev = st["feats"], notes(root, "Gaps"), notes(root, "Findings"), notes(root, "Deviations")
-    print(f"[skift] {sum(f['passes'] for f in feats)}/{len(feats)} features pass · {len(st['detailed'])} of {plural(len(st['map']['slices']), 'slice')} detailed")
-    for s in st["map"]["slices"]:
-        if s["name"] not in st["detailed"]:
-            print(f"[skift] {s['name']}  not detailed yet: {s['what']}")
-            continue
-        mine = [f for f in feats if f["_slice"] == s["name"]]
-        g, fi, dv = (sum(len(n.get(f["id"], [])) for f in mine) for n in (gaps, found, dev))
-        print(f"[skift] {s['name']}  {sum(f['passes'] for f in mine)}/{len(mine)} passing · {plural(g, 'gap')} · "
-              f"{plural(fi, 'finding')} · {plural(dv, 'deviation')}")
-        for f in mine:
-            marks = ("  (gap)" if f["id"] in gaps else "") + (("  (spec changed since it passed)" if f["passes"] else "  (spec changed)") if st["affected"][f["id"]] else "")
-            print(f"[skift]   [{'x' if f['passes'] else ' '}] {f['id']}  {f['description']}{marks}")
-    for i in st["new"]: print(f"[skift] new in the spec, in no slice: {i} ({st['rows'][i]['title']})")
-    if st["new"] or any(st["affected"].values()):
-        print(f"[skift] the spec changed: /skift:spec {st['spec']} updates the features first; build none marked (spec changed) before it")
+    """--status: every task in build order with its tickets and their status, what the spec changed under, and
+    the tasks with no tickets yet."""
+    for old in LEGACY:
+        if (root / old).exists(): print(f"[skift] {old} is from skift before 1.0: rerun /skift:spec, then /skift:tasks")
+    spec, rows = spec_rows(root)
+    ts, tk = tasks(root), tickets(root)
+    marks = drift(root, rows) if rows and (root / SOURCE).is_file() else {}
+    done = sum(k["status"] == "done" for k in tk)
+    print(f"[skift] {plural(len(ts), 'task')} · {plural(len(tk), 'ticket')} · {done} done · "
+          f"{sum(k['status'] == 'in_review' for k in tk)} in review · spec: {spec or 'none'}")
+    for t in ts:
+        mine = [k for k in tk if k["parent"] == t["n"]]
+        waits = f" · after {', '.join(str(n) for n in t['after'])}" if t["after"] else ""
+        mark = "  (spec changed)" if t["n"] in marks else ""
+        print(f"[skift] task {t['n']} {t['title']}{waits}{mark}")
+        if not mine:
+            print(f"[skift]   no tickets yet: /skift:kanban {t['n']}")
+        for k in mine:
+            human = sum(a["tag"] == "human" for a in k["acs"])
+            print(f"[skift]   [{k['status']}] {k['id']}  {k['title']}  ({plural(len(k['acs']), 'AC')}"
+                  f"{f', {human} for you' if human else ''}){'  (spec changed)' if k['id'] in marks else ''}")
+    if df := deferred(root): print(f"[skift] deferred: {plural(len(df), 'section')} no task covers")
+    for i in (new_sections(root, rows) if rows and (root / SOURCE).is_file() else []):
+        print(f"[skift] new in the spec, in no task: {i} ({rows[i]['title']})")
+    if marks: print(f"[skift] the spec changed: rerun /skift:spec, then /skift:kanban for each task marked above")
     return 0
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--project-dir", default=".", help="the project repo (default: cwd)")
-    p.add_argument("--status", action="store_true", help="per slice: passing/total, gaps, findings and each feature; spec changes")
+    p.add_argument("--status", action="store_true", help="the board: every task, its tickets and their status")
     p.add_argument("--index", metavar="SPEC", help="for /skift:spec: index the spec (a .md file or a folder) into kanban/index.md")
     p.add_argument("--show", metavar="ID", nargs="+", help="for /skift:spec: print these sections of the spec, with line numbers")
     p.add_argument("--grep", metavar="REGEX", help="for /skift:spec: the sections whose heading or text matches")
-    p.add_argument("--mark-spec", metavar="SPEC", help="for /skift:spec: check the map and the features against the spec, and record it")
+    p.add_argument("--check-spec", metavar="SPEC", help="for /skift:spec: the fixed checks on the spec's shape and wording")
+    p.add_argument("--coverage", action="store_true", help="for /skift:tasks and /skift:kanban: check the tasks and tickets against the spec")
+    p.add_argument("--record", action="store_true", help="for /skift:kanban: --coverage, then record each section's hash and print the board")
     a = p.parse_args()
     root = Path(a.project_dir).resolve()
     reports = {"index": lambda: build_index(root, a.index), "show": lambda: show(root, a.show), "grep": lambda: grep(root, a.grep),
-               "mark_spec": lambda: mark(root, a.mark_spec), "status": lambda: status(root)}
+               "check_spec": lambda: check_spec(root, a.check_spec), "record": lambda: check(root, True),
+               "coverage": lambda: check(root, False), "status": lambda: status(root)}
     if not (chosen := [k for k in reports if getattr(a, k)]):
         p.print_usage()
         return 2
